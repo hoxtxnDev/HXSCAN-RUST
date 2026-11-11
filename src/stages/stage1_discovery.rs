@@ -344,14 +344,12 @@ pub fn parse_port_spec(spec: &str) -> Result<Vec<u16>, DiscoveryError> {
         }
 
         if let Some((start_str, end_str)) = token.split_once('-') {
-            let start_val = start_str
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| DiscoveryError::InvalidPortSpec(format!("Invalid port range: {token}")))?;
-            let end_val = end_str
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| DiscoveryError::InvalidPortSpec(format!("Invalid port range: {token}")))?;
+            let start_val = start_str.trim().parse::<u32>().map_err(|_| {
+                DiscoveryError::InvalidPortSpec(format!("Invalid port range: {token}"))
+            })?;
+            let end_val = end_str.trim().parse::<u32>().map_err(|_| {
+                DiscoveryError::InvalidPortSpec(format!("Invalid port range: {token}"))
+            })?;
 
             if start_val < 1 || end_val > 65535 || start_val > end_val {
                 return Err(DiscoveryError::InvalidPortSpec(format!(
@@ -360,9 +358,9 @@ pub fn parse_port_spec(spec: &str) -> Result<Vec<u16>, DiscoveryError> {
             }
             bitmap.insert_range(start_val as u16, end_val as u16);
         } else {
-            let port_val = token
-                .parse::<u32>()
-                .map_err(|_| DiscoveryError::InvalidPortSpec(format!("Invalid port number: {token}")))?;
+            let port_val = token.parse::<u32>().map_err(|_| {
+                DiscoveryError::InvalidPortSpec(format!("Invalid port number: {token}"))
+            })?;
             if !(1..=65535).contains(&port_val) {
                 return Err(DiscoveryError::InvalidPortSpec(format!(
                     "Port out of range (1-65535): {port_val}"
@@ -385,7 +383,11 @@ pub fn shuffle_ports(ports: &mut [u16], seed: u64) {
     if ports.len() <= 1 {
         return;
     }
-    let mut state = if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed };
+    let mut state = if seed == 0 {
+        0x9E37_79B9_7F4A_7C15
+    } else {
+        seed
+    };
     for i in (1..ports.len()).rev() {
         state ^= state >> 12;
         state ^= state << 25;
@@ -440,10 +442,7 @@ mod tests {
 
     #[test]
     fn test_deduplication_via_bitmap() {
-        assert_eq!(
-            parse_port_spec("80,80,80,79-81").unwrap(),
-            vec![79, 80, 81]
-        );
+        assert_eq!(parse_port_spec("80,80,80,79-81").unwrap(), vec![79, 80, 81]);
     }
 
     #[test]

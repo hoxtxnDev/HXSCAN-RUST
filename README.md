@@ -1,50 +1,73 @@
 <pre align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=0,2,3,6&height=200&section=header&text=HXSCAN-RUST%20(tcpscan)&fontSize=54&fontAlignY=35&desc=Staged%20Mediator%20TCP%20Port%20Scanner%20%26%20Cybersecurity%20Auditor&descAlignY=58" />
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=0,2,3,6&height=200&section=header&text=HXSCAN-RUST%20(tcpscan)&fontSize=54&fontAlignY=35&desc=Staged%20Mediator%20TCP%20Scanner%20%7C%20Stealth%20%26%20Honeypot%20Analysis&descAlignY=58" />
 </pre>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-2021%20Edition-DEA584?style=for-the-badge&logo=rust&logoColor=black" />
   <img src="https://img.shields.io/badge/Architecture-Mediator%20Pattern-8A2BE2?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" />
-  <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" />
-  <img src="https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white" />
+  <img src="https://img.shields.io/badge/Modes-Stealth%20%2F%20Mutable-00A86B?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Honeypot-Behavioral%20Analysis-FF8C00?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Dependencies-0%20(100%25%20std)-blue?style=for-the-badge" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" />
 </p>
 
 <p align="center">
-  <b>⚡ Escáner de puertos TCP por etapas y auditor de superficie de ataque en Rust</b><br />
-  <b>🦀 100% Rust `std` — 🧩 Patrón Mediator — 🔒 Lock-Free Concurrency — 🚀 Simplicidad `tcpscan`</b>
+  <b>⚡ Escáner de puertos TCP por etapas, auditor de superficie de ataque y analizador conductual de honeypots</b><br />
+  <b>🦀 100% Rust `std` — 🧩 Patrón Mediator — 🥷 Stealth / Mutable — 🍯 Honeypot Detection</b>
 </p>
 
 ---
 
-## 🚀 ¿Qué es `HXSCAN-RUST` (`tcpscan` v2.0)?
+> ⚠️ **Uso autorizado únicamente.** `HXSCAN-RUST` está diseñado para auditorías de seguridad con autorización escrita explícita. Los modos `stealth`, `mutable` y los filtros anti-IA reducen firmas evidentes de escaneo, pero **no garantizan** la evasión de sistemas AI/ML, IDS/IPS, EDR o soluciones de correlación. Consulta [`SECURITY.md`](SECURITY.md) antes de ejecutar la herramienta.
 
-`HXSCAN-RUST` es la evolución completa en **Rust** del antiguo escáner en Python, rediseñado como una herramienta profesional de auditoría de ciberseguridad (**TCP Port Scanning & Attack Surface Auditing**) bajo dos pilares de ingeniería de software:
+---
 
-1. **Arquitectura Modular por Etapas gobernada por el Patrón de Diseño `Mediator` (*Mediador / Intermediary / Controller*)**:
-   - Cada etapa (`DiscoveryColleague`, `ScannerColleague`, `FingerprintColleague`, `AuditColleague`, `ReportColleague`) está completamente desacoplada (**0 imports cruzados entre etapas**) y se comunica exclusivamente a través de [`ScanController`](src/mediator/controller.rs) mediante eventos tipados ([`ScanEvent`](src/mediator/contract.rs)) y directivas reactivas ([`MediatorDirective`](src/mediator/contract.rs)).
+## 🚀 ¿Qué es `HXSCAN-RUST` (`tcpscan` v2.1)?
+
+`HXSCAN-RUST` es la evolución completa en **Rust** del antiguo escáner en Python, rediseñado como una herramienta profesional de auditoría de ciberseguridad (**TCP Port Scanning, Attack Surface Auditing & Deception Detection**). La versión **2.1** incorpora modos de baja huella y camuflaje corporativo, un sobre de legitimidad anti-IA y clasificación conductual de honeypots, manteniendo intactos los dos pilares del proyecto:
+
+1. **Arquitectura Modular gobernada por el Patrón de Diseño `Mediator` (*Mediador / Intermediary / Controller*)**:
+   - Cada etapa (`DiscoveryColleague`, `ScannerColleague`, `FingerprintColleague`, `HoneypotColleague`, `AuditColleague`, `ReportColleague`) está completamente desacoplada (**0 imports cruzados entre etapas**) y se comunica exclusivamente a través de [`ScanController`](src/mediator/controller.rs) mediante eventos tipados ([`ScanEvent`](src/mediator/contract.rs)) y directivas reactivas ([`MediatorDirective`](src/mediator/contract.rs)).
+   - La lógica transversal de cadencia, mutación y legitimidad vive en [`src/stealth.rs`](src/stealth.rs), compartida por Stage 2 y Stage 3 sin romper el patrón.
    - Documentación detallada y diagramas UML completos en [`ARCHITECTURE_MEDIATOR_UML.md`](ARCHITECTURE_MEDIATOR_UML.md).
 2. **Cero Dependencias Externas (`100% Rust std`)**:
    - Sin crates de terceros: compilación limpia en segundos y **cero superficie de ataque por cadena de suministro (Supply-Chain Security)**.
 
 ---
 
+## ✨ Novedades de la versión 2.1
+
+| Capacidad | Qué aporta |
+|-----------|------------|
+| 🥷 **Modo `--stealth`** | Puertos aleatorizados, jitter, techo global de paquetes por segundo, ráfagas humanas, backoff adaptativo y banners desactivados por defecto. |
+| 🎭 **Modo `--mutable`** | Perfil de camuflaje corporativo: persona de estación de trabajo empresarial, ráfagas tipo usuario real y cabeceras HTTP mutadas. |
+| 🧠 **Filtros anti-IA (`--ai-filter`)** | Sobre de legitimidad que mantiene la cadencia dentro de envelopes de tráfico empresarial y calcula un **score de legitimidad** honesto en el reporte. |
+| 🍯 **Clasificación de honeypots** | Nuevo `HoneypotColleague` que clasifica cada puerto como `clean`, `possible-honeypot` o `honeypot`, explicando el **comportamiento observado**. |
+| 🪤 **Detección por comportamiento** | Firmas Cowrie/Kippo/Dionaea/Thinkst, puertos señuelo, incoherencias protocolo-servicio, tarpits, exposición masiva, RTT uniforme, banners clonados y más. |
+| 📊 **Telemetría ampliada** | Reporte humano con columna `Honeypot`, sección de comportamiento, línea de legitimidad y bloques `stealth`/`honeypot` en JSON/CSV. |
+| 🧩 **6 colegas desacoplados** | `HoneypotColleague` se insertó como Stage 4 sin tocar la lógica interna de los demás colegas: prueba real de escalabilidad plug-and-play. |
+
+---
+
 ## 🔥 ¿Por qué es mejor que la versión anterior?
 
-| Dimensión | Versión Antigua (Python v1.0) | Nueva Versión (`HXSCAN-RUST` / `tcpscan` v2.0) |
+| Dimensión | Versión Antigua (Python v1.0) | Nueva Versión (`HXSCAN-RUST` / `tcpscan` v2.1) |
 |-----------|-------------------------------|-----------------------------------------------|
 | **Lenguaje y Runtime** | Python interpretado (limitado por GIL) | **Rust nativo** (`LTO` + `opt-level = 3`), binario autónomo |
-| **Arquitectura** | Script monolítico acoplado (`hxscan.py`) | **Modular en 5 Etapas + Patrón `Mediator`** (`0` acoplamiento cruzado) |
+| **Arquitectura** | Script monolítico acoplado (`hxscan.py`) | **Modular en 6 Etapas + Patrón `Mediator`** (`0` acoplamiento cruzado) |
 | **Deduplicación de Puertos** | `set[int]` en heap + `sorted()` | **`PortBitmap` en stack de `8 KiB` (`[u64; 1024]`)**, $O(1)$ memoria |
 | **Concurrencia TCP** | `queue.Queue` + `threading.Lock` en cada puerto | **Lock-Free** (`AtomicUsize` + buffers locales por hilo, **0 Mutexes**) |
 | **Semántica de Estados TCP** | Solo `open`, `closed`, `error` | **`open` (`SYN-ACK`), `closed` (`RST`), `filtered` (Firewall Drop) y `error` + RTT ($\mu\text{s}$)** |
 | **Fingerprinting Activo** | Diccionario estático de 43 puertos | **70+ servicios (búsqueda binaria) + Active Banner Grabbing** sobre el mismo socket abierto |
+| **Modos Evasivos** | Ninguno | **`--stealth` (bajo ruido) y `--mutable` (camuflaje corporativo)** con jitter, rate ceiling, bursts y backoff adaptativo |
+| **Mutación de Tráfico** | Ninguna | **5 personas empresariales** y cabeceras HTTP mutadas (`User-Agent`, `Accept`, `Accept-Language`, etc.) |
+| **Anti-IA / Legitimidad** | Ninguno | **Sobre de legitimidad**, score `0-100` y grado `A`–`F` incluidos en el reporte |
+| **Detección de Honeypots** | Ninguna | **Clasificación conductual** `clean` / `possible-honeypot` / `honeypot` con evidencias explicables |
 | **Seguridad Terminal & Host** | Sin filtrado de respuesta | **Protección del Equipo de Origen (`--protect-origin`, Anti-DNS Rebinding, Anti-CSV Injection, Sanitización ANSI CSI/OSC, `#![forbid(unsafe_code)]`)** |
 | **Auditoría Ciberseguridad** | Ninguna | **Motor de Riesgo (`CRITICAL` a `INFO`), Posture Score (`0-100`, Grado `A`–`F`) y alertas en vivo** |
-| **Formatos de Salida** | Texto plano (con bug de puertos cerrados) | **Tabla Humana ANSI (solo abiertos por defecto), JSON (`--json` para SIEM) y CSV (`--csv`)** |
+| **Formatos de Salida** | Texto plano (con bug de puertos cerrados) | **Tabla Humana ANSI, JSON (`--json` para SIEM) y CSV (`--csv`) con telemetría stealth y honeypot** |
 | **Ejecución CLI** | Obligatorio usar `-t <host> -p <ports>` | **Simplicidad posicional `tcpscan <host> [ports]`**, `host:port`, perfiles y flags clásicos |
-| **Testing** | 15 tests básicos | **44 tests en Rust** (36 unitarios por etapa + 8 de integración y traza del Mediador) |
+| **Testing** | 15 tests básicos | **60 tests en Rust** (49 unitarios + 11 de integración y traza del Mediador) |
 
 ---
 
@@ -74,7 +97,8 @@ cargo build --release
 
 # 4️⃣ Perfiles tácticos de ciberseguridad
 ./tcpscan 10.0.0.1 --quick            # Top 20 puertos críticos (timeout 400ms)
-./tcpscan 10.0.0.1 --stealth          # Puertos aleatorizados (Fisher-Yates) + rate-limiting
+./tcpscan 10.0.0.1 --stealth          # Bajo ruido: shuffle + jitter + rate ceiling
+./tcpscan 10.0.0.1 --mutable          # Camuflaje corporativo (persona + bursts + banners)
 ./tcpscan 10.0.0.1 --profile audit    # Auditoría profunda con Banner Grabbing y reintentos
 ./tcpscan 10.0.0.1 --full             # Barrido completo de los 65,535 puertos (512 hilos)
 
@@ -95,29 +119,175 @@ cargo build --release
 
 ---
 
+## 🥷 Modos de Operación: `normal`, `stealth` y `mutable`
+
+| Parámetro | `normal` | `--stealth` | `--mutable` |
+|-----------|----------|-------------|-------------|
+| **Objetivo** | Máxima velocidad | Bajo ruido / auditoría discreta | Integrarse en tráfico corporativo |
+| **Hilos por defecto** | 100 | 10 | 4 |
+| **Orden de puertos** | Secuencial | Aleatorizado (Fisher-Yates) | Aleatorizado (Fisher-Yates) |
+| **Jitter** | 0 ms | 120 ms | 80 ms |
+| **Techo global** | Sin límite | 3 pps | 6 pps |
+| **Ráfagas** | Desactivadas | 1 sonda + pausa 900 ms | 5 sondas + pausa 500 ms |
+| **Banners activos** | Sí | No (por defecto) | Sí |
+| **Persona HTTP** | `generic` | `generic` | `corporate` |
+| **Backoff adaptativo** | No | Sí | Sí |
+| **AI-Filter / telemetría** | No | Sí | Sí |
+
+### 🥷 `--stealth`: baja huella
+
+- **Jitter uniforme** por sonda (`--jitter-ms`, `0..=5000`).
+- **Techo global de paquetes por segundo** (`--max-pps`, `0..=1000`; `0` = ilimitado), repartido entre los workers.
+- **Ráfagas y pausas** (`--burst`, `--burst-pause-ms`) para evitar patrones constantes y fácilmente correlacionables.
+- **Backoff exponencial adaptativo** (hasta `8x`) cuando aparecen puertos `filtered` o errores, y reset automático al volver a estados normales.
+- **Banners desactivados por defecto** para reducir la interacción activa con servicios desconocidos.
+
+### 🎭 `--mutable`: camuflaje corporativo
+
+El modo mutable combina cadencia humana con una **identidad de cliente legítima**:
+
+| Persona (`--persona`) | Identidad simulada |
+|------------------------|--------------------|
+| `generic` | Navegador neutral (Chrome/Safari) |
+| `corporate` | Estación de trabajo Windows gestionada (Edge/Chrome) |
+| `browser` | Firefox de escritorio (Windows/Linux) |
+| `windows-update` | Windows Update / Delivery Optimization |
+| `backup-agent` | Microsoft BITS / agente de backup empresarial |
+
+En sondas HTTP, `Stage 3` muta `User-Agent`, `Accept`, `Accept-Language`, `Host`, `Upgrade-Insecure-Requests` y `Connection`, eliminando la firma explícita de `tcpscan`. `Accept-Encoding: identity` se mantiene intencionalmente para que el banner siga siendo imprimible y sanitizable.
+
+```bash
+# Camuflaje corporativo con ajustes finos
+./tcpscan 10.0.0.7 --mutable \
+  --persona corporate \
+  --jitter-ms 90 \
+  --max-pps 5 \
+  --burst 4 \
+  --burst-pause-ms 700 \
+  --decoy-probes 8
+
+# Forzar una identidad de actualización de Windows
+./tcpscan 10.0.0.7 80,443 --mutable --persona windows-update
+
+# Stealth con banners y persona de navegador (mayor interacción)
+./tcpscan 10.0.0.7 --stealth --banner --persona browser
+```
+
+> 🪤 **Decoys**: `--decoy-probes N` intercala hasta `128` sondas señuelo **solo contra el mismo objetivo autorizado** (puertos empresariales habituales como `53`, `80`, `443`, `445`, `993`, `8080`, `8443`). Sus resultados se descartan y **nunca** se envían a terceros.
+
+---
+
+## 🧠 Filtros Anti-IA y Sobre de Legitimidad
+
+La v2.1 incorpora un **sobre de legitimidad** diseñado para que un sistema defensivo no clasifique automáticamente una auditoría **autorizada** como tráfico malicioso. No es un mecanismo de evasión garantizada: es una combinación de control de cadencia, mutación de identidad y telemetría honesta.
+
+El score `0..=100` se calcula en [`assess_legitimacy`](src/stealth.rs) a partir de:
+
+| Factor | Efecto aproximado |
+|--------|-------------------|
+| Base neutral | `65` |
+| Modo `stealth` / `mutable` | `+20` / `+25` |
+| `--ai-filter` activo | `+8` |
+| Jitter configurado | `+5` (`+3` extra si ≥ 50 ms) |
+| `--max-pps ≤ 10` / `≤ 50` / `≤ 100` | `+10` / `+6` / `+2` |
+| `--max-pps > 200` | `-10` |
+| Ráfagas configuradas | `+4` |
+| Persona distinta de `generic` | `+4` |
+| Backoff adaptativo | `+4` |
+| Sin banners / banners + persona `generic` | `+2` / `-8` |
+| Ratio `filtered > 20%` / `> 50%` | `-5` / `-15` |
+
+| Score | Grado | Interpretación |
+|-------|-------|----------------|
+| `85–100` | `A` | Configuración muy alineada con tráfico empresarial |
+| `70–84` | `B` | Buena cobertura de controles |
+| `55–69` | `C` | Cobertura parcial; revisar cadencia/persona |
+| `40–54` | `D` | Huella de escáner todavía evidente |
+| `0–39` | `F` | Configuración de alto ruido |
+
+> 🧠 `--ai-filter` controla el **libro de contabilidad y la telemetría de legitimidad**. Las palancas que realmente modifican el tráfico (`--jitter-ms`, `--max-pps`, `--burst`, `--persona`, `--adaptive-pacing`) actúan de forma independiente. Un score alto **no certifica** que el scan vaya a pasar desapercibido.
+
+---
+
+## 🍯 Clasificación Conductual de Honeypots (`Stage 4`)
+
+El nuevo `HoneypotColleague` analiza **todos** los puertos enriquecidos y emite un veredicto por puerto, junto con las evidencias que lo justifican.
+
+| Veredicto | Umbral | Significado |
+|-----------|--------|-------------|
+| `clean` | `score < 30` | Sin indicadores relevantes de engaño |
+| `possible-honeypot` | `30 ≤ score < 70` | Señales débiles/medias; corroborar antes de interactuar |
+| `honeypot` | `score ≥ 70` | Evidencia fuerte: firma conocida, servicios contradictorios o exposición masiva |
+
+### Evidencias y pesos
+
+| Comportamiento | Peso | Disparador |
+|----------------|------|------------|
+| `known-honeypot-signature` | 80 | Banner coincide con Cowrie, Kippo, Dionaea, Glastopf, Honeyd, Thinkst Canary, Conpot, Endlessh, etc. |
+| `mass-open-services` | 45 | ≥ 10 puertos abiertos y ≥ 35% de los puertos escaneados |
+| `service-port-mismatch` | 35 | El banner habla un protocolo distinto al servicio/puerto esperado |
+| `contradictory-banner` | 30 | Un mismo banner mezcla protocolos incompatibles |
+| `cloned-banners` | 25 | ≥ 3 servicios devuelven exactamente el mismo banner |
+| `honeypot-port` | 20 | Puerto típico de despliegues honeypot (`2222`, `2323`, `4444`, `9999`, `31337`, etc.) |
+| `tarpit-latency` | 20 | Handshake > 2.5 s fuera de loopback |
+| `uniform-rtt` | 20 | ≥ 6 servicios con una dispersión de RTT ≤ 200 µs |
+| `honeypot-port-cluster` | 20 | ≥ 3 puertos típicos de honeypot abiertos en el mismo objetivo |
+| `default-credential-prompt` | 20 | Prompt interactivo de credenciales en un servicio inesperado |
+| `fake-version-disclosure` | 15 | Versiones legacy/falsas típicas de frameworks de decepción |
+| `bannerless-interactive-service` | 10 | Servicio interactivo que acepta conexión pero no envía banner |
+| `unusual-ephemeral-service` | 10 | Servicio expuesto en un puerto efímero (`≥ 49152`) |
+
+### Señales agregadas
+
+- **Exposición masiva**: `open_count ≥ 10` y `open_count ≥ 35%` del total escaneado.
+- **RTT uniforme**: al menos 6 puertos abiertos con RTT máximo-mínimo `≤ 200 µs` (excluye loopback).
+- **Banners clonados**: 3 o más puertos con el mismo banner (longitud ≥ 8 caracteres).
+- **Clúster de puertos señuelo**: 3 o más puertos de la lista de honeypots típicos.
+
+### Ejemplo de salida
+
+```text
+Mode: mutable | Persona: corporate | AI-Filter: on | Legitimacy: 93/100 (A)
+...
+Port     State      RTT        Service          Risk     Honeypot   Banner / Details
+2222     open       0.90ms     SSH              LOW      HONEYPOT   SSH-2.0-Cowrie-1.0
+
+[Honeypot & Deception Behavior Analysis]
+  • Port 2222  (SSH): HONEYPOT 100/100 — known-honeypot-signature, honeypot-port
+    banner matches a known deception framework; port is frequently used by honeypot deployments
+
+Scanned: 120 port(s) | Open: 4 | Closed: 110 | Filtered: 6 | Honeypots: 1 confirmed / 0 possible | Posture Grade: B (Score: 18/100)
+```
+
+> 🍯 Un veredicto `possible-honeypot` o `honeypot` es una **hipótesis basada en comportamiento observable**, no una prueba forense. Corrobora siempre con contexto del activo, propietario y ventana de auditoría.
+
+---
+
 ## 🧩 Arquitectura del Patrón Mediator (`src/`)
 
 ```text
 📁 HXSCAN-RUST
 ├── 📄 Cargo.toml                        # Configuración Cargo (binarios: tcpscan y hxscan, LTO release)
 ├── 🚀 tcpscan                           # Lanzador directo endurecido (POSIX)
-├── 📄 SECURITY.md                       # Auditoría de seguridad y blindaje del equipo de origen
+├── 📄 SECURITY.md                       # Auditoría de seguridad, controles anti-IA y uso responsable
 ├── 📄 ARCHITECTURE_MEDIATOR_UML.md      # Documentación de diseño, gráficos UML y plan de escalabilidad
 ├── 📁 src/
 │   ├── 📄 lib.rs                        # API pública (#![forbid(unsafe_code)])
 │   ├── 📄 main.rs                       # Entrypoint del binario `tcpscan`
-│   ├── 📄 cli.rs                        # [Stage 0: CliColleague] Parser ergonómico + cuotas anti-DoS
+│   ├── 📄 cli.rs                        # [Stage 0: CliColleague] Parser ergonómico, perfiles y cuotas
+│   ├── 📄 stealth.rs                    # PacingController, jitter, decoys, personas y score de legitimidad
 │   ├── 📁 mediator/
 │   │   ├── 📄 mod.rs                    # Exportaciones del Mediador
-│   │   ├── 📄 contract.rs               # Trait `ScanMediator`, `ScanEvent`, `MediatorDirective` y DTOs
+│   │   ├── 📄 contract.rs               # Trait `ScanMediator`, eventos, directivas y DTOs stealth/honeypot
 │   │   └── 📄 controller.rs             # `ScanController` (Mediador Concreto + Event Trace)
 │   └── 📁 stages/
-│       ├── 📄 mod.rs                    # Registro de los 5 Colegas desacoplados
+│       ├── 📄 mod.rs                    # Registro de los 6 Colegas desacoplados
 │       ├── 📄 stage1_discovery.rs       # [Stage 1: DiscoveryColleague] DNS, Anti-Rebinding y PortBitmap (8 KiB)
-│       ├── 📄 stage2_scanner.rs         # [Stage 2: ScannerColleague] Sondeo TCP Lock-Free + RTT
-│       ├── 📄 stage3_fingerprint.rs     # [Stage 3: FingerprintColleague] 70+ servicios + Sanitización CSI/OSC
-│       ├── 📄 stage4_audit.rs           # [Stage 4: AuditColleague] Riesgo SOC/Pentest y Posture Grade (A-F)
-│       └── 📄 stage5_report.rs          # [Stage 5: ReportColleague] Renderizado ANSI, JSON y CSV seguro
+│       ├── 📄 stage2_scanner.rs         # [Stage 2: ScannerColleague] Sondeo TCP Lock-Free + PacingController
+│       ├── 📄 stage3_fingerprint.rs     # [Stage 3: FingerprintColleague] 70+ servicios + mutación por persona
+│       ├── 📄 stage4_honeypot.rs        # [Stage 4: HoneypotColleague] Clasificación conductual de honeypots
+│       ├── 📄 stage5_audit.rs           # [Stage 5: AuditColleague] Riesgo SOC/Pentest + veredictos honeypot
+│       └── 📄 stage6_report.rs          # [Stage 6: ReportColleague] ANSI, JSON y CSV con stealth/honeypot
 └── 📁 tests/
     └── 📄 pipeline_integration.rs       # Suite de integración end-to-end y verificación del Mediador
 ```
@@ -130,11 +300,56 @@ flowchart LR
     S1["Stage 1: DiscoveryColleague"] <-->|"TargetDiscovered / Directive"| CTRL
     S2["Stage 2: ScannerColleague"] <-->|"mediate_open_stream & ProbingCompleted"| CTRL
     S3["Stage 3: FingerprintColleague"] <-->|"FingerprintingCompleted"| CTRL
-    S4["Stage 4: AuditColleague"] <-->|"CriticalFindingDetected & AuditCompleted"| CTRL
-    S5["Stage 5: ReportColleague"] <-->|"ReportRendered"| CTRL
+    S4["Stage 4: HoneypotColleague"] <-->|"HoneypotAssessmentCompleted"| CTRL
+    S5["Stage 5: AuditColleague"] <-->|"CriticalFindingDetected & AuditCompleted"| CTRL
+    S6["Stage 6: ReportColleague"] <-->|"ReportRendered"| CTRL
+    ST["stealth.rs (pacing / personas / legitimacy)"] -.-> S2
+    ST -.-> S3
+    ST -.-> CTRL
 ```
 
-*(Ver diagramas UML completos de Clases, Secuencia, Estados y Escalabilidad en [`ARCHITECTURE_MEDIATOR_UML.md`](ARCHITECTURE_MEDIATOR_UML.md)).*
+*(Ver diagramas UML completos de Clases, Secuencia, Estados, Topología y flujos de decisión en [`ARCHITECTURE_MEDIATOR_UML.md`](ARCHITECTURE_MEDIATOR_UML.md)).*
+
+---
+
+## 📡 Salida JSON y CSV
+
+El reporte JSON incluye bloques `stealth`, `summary` y `honeypot` para automatización SOC/SOAR:
+
+```json
+{
+  "scanner": "tcpscan-rs",
+  "version": "2.1.0",
+  "pattern": "Mediator",
+  "stealth": {
+    "mode": "mutable",
+    "persona": "corporate",
+    "ai_filter": true,
+    "max_pps": 6.0,
+    "jitter_ms": 80,
+    "legitimacy_score": 93,
+    "legitimacy_grade": "A"
+  },
+  "summary": {
+    "possible_honeypots": 0,
+    "confirmed_honeypots": 1
+  },
+  "ports": [
+    {
+      "port": 2222,
+      "state": "open",
+      "service": "SSH",
+      "honeypot": {
+        "verdict": "honeypot",
+        "score": 100,
+        "behaviors": ["known-honeypot-signature", "honeypot-port"]
+      }
+    }
+  ]
+}
+```
+
+El CSV añade las columnas `honeypot_verdict`, `honeypot_score` y `honeypot_behaviors`, manteniendo la neutralización de fórmulas CWE-1236.
 
 ---
 
@@ -144,9 +359,9 @@ flowchart LR
 cargo test
 ```
 
-Incluye **44 pruebas automatizadas**:
-- **36 pruebas unitarias** distribuidas en cada etapa (`PortBitmap` de 65,535 puertos, clasificación de alcance IP, bloqueo de DNS Rebinding y `0.0.0.0`, distribución multihilo *lock-free*, `MockStream` para sondas HTTP/Redis/SSH, sanitización ANSI CSI/OSC, protección CSV CWE-1236, escalado de severidad y formatos de reporte).
-- **8 pruebas de integración** en [`tests/pipeline_integration.rs`](tests/pipeline_integration.rs) verificando la traza cronológica de eventos del **Mediator** (`event_trace`), directivas reactivas (`PublicTargetHardeningMode`, `FirewallDropDetected`, `EscalateCriticalAlert`), bloqueo `--protect-origin`, sockets no bloqueantes y códigos de salida (`0`, `1`, `2`).
+Incluye **60 pruebas automatizadas**:
+- **49 pruebas unitarias** distribuidas en cada etapa y en `stealth.rs` (`PortBitmap` de 65,535 puertos, clasificación de alcance IP, bloqueo de DNS Rebinding y `0.0.0.0`, distribución multihilo *lock-free*, `MockStream` para sondas HTTP/Redis/SSH, mutación de cabeceras por persona, pacing adaptativo, jitter, decoys, sanitización ANSI CSI/OSC, protección CSV CWE-1236, escalado de severidad, firmas y señales agregadas de honeypot, formatos de reporte).
+- **11 pruebas de integración** en [`tests/pipeline_integration.rs`](tests/pipeline_integration.rs) verificando la traza cronológica del **Mediator** (`event_trace`), directivas reactivas (`PublicTargetHardeningMode`, `FirewallDropDetected`, `AdaptivePacingEngaged`, `PossibleHoneypotDetected`, `ConfirmedHoneypotDetected`, `EscalateCriticalAlert`), telemetría `mutable`, clasificación de honeypots, bloqueo `--protect-origin`, sockets y códigos de salida (`0`, `1`, `2`).
 
 ---
 
@@ -158,6 +373,16 @@ Incluye **44 pruebas automatizadas**:
 | ❌ `1` | Error de argumentos, rango de puertos inválido o fallo DNS |
 | 📭 `2` | Escaneo completado sin puertos abiertos |
 | 🛑 `130` | Interrupción por usuario (`Ctrl+C`) |
+
+---
+
+## ⚖️ Uso Responsable
+
+- Ejecuta la herramienta **solo** contra activos propios o con autorización escrita explícita.
+- Los modos `stealth`, `mutable` y los filtros anti-IA están pensados para **auditorías autorizadas**, no para ocultar actividad maliciosa.
+- Respeta las leyes locales, los acuerdos de alcance (*Rules of Engagement*) y las políticas de la organización.
+- No uses `--decoy-probes` para generar tráfico hacia terceros: el diseño lo restringe al objetivo autorizado.
+- Documenta y conserva la evidencia de autorización antes de cada auditoría.
 
 ---
 

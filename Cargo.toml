@@ -1,9 +1,9 @@
 [package]
 name = "tcpscan"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 authors = ["hoxtxnDev"]
-description = "High-performance staged modular TCP port scanner and cybersecurity auditing tool (HXSCAN Rust Edition)"
+description = "Staged Mediator TCP port scanner with stealth/mutable traffic blending, anti-AI legitimacy envelope and behavioral honeypot classification (HXSCAN Rust Edition)"
 license = "MIT"
 repository = "https://github.com/hoxtxnDev/HXSCAN-RUST"
 readme = "README.md"

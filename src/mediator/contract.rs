@@ -5,8 +5,9 @@
 //!
 //! ## Architectural Guarantee (Zero Cross-Stage Coupling)
 //! None of the concrete stage modules (`stage1_discovery`, `stage2_scanner`, `stage3_fingerprint`,
-//! `stage4_audit`, `stage5_report`) import one another. Every colleague depends **only** on
-//! `crate::mediator::contract` and communicates exclusively through the [`ScanMediator`] trait.
+//! `stage4_honeypot`, `stage5_audit`, `stage6_report`) import one another. Every colleague depends
+//! **only** on `crate::mediator::contract` and communicates exclusively through the
+//! [`ScanMediator`] trait.
 
 use std::fmt;
 use std::net::{IpAddr, TcpStream};
@@ -23,9 +24,11 @@ pub enum ComponentId {
     ScannerColleague,
     /// Stage 3: Service Identification & Banner Grabbing Colleague.
     FingerprintColleague,
-    /// Stage 4: Cybersecurity Risk & Posture Audit Colleague.
+    /// Stage 4: Honeypot & Deception Behavior Analysis Colleague.
+    HoneypotColleague,
+    /// Stage 5: Cybersecurity Risk & Posture Audit Colleague.
     AuditColleague,
-    /// Stage 5: Telemetry & Multi-Format Reporting Colleague.
+    /// Stage 6: Telemetry & Multi-Format Reporting Colleague.
     ReportColleague,
 }
 
@@ -36,8 +39,9 @@ impl ComponentId {
             Self::DiscoveryColleague => "Stage1::DiscoveryColleague",
             Self::ScannerColleague => "Stage2::ScannerColleague",
             Self::FingerprintColleague => "Stage3::FingerprintColleague",
-            Self::AuditColleague => "Stage4::AuditColleague",
-            Self::ReportColleague => "Stage5::ReportColleague",
+            Self::HoneypotColleague => "Stage4::HoneypotColleague",
+            Self::AuditColleague => "Stage5::AuditColleague",
+            Self::ReportColleague => "Stage6::ReportColleague",
         }
     }
 }
@@ -55,6 +59,7 @@ pub enum MediatorState {
     Discovering,
     Probing,
     Fingerprinting,
+    HoneypotAnalysis,
     Auditing,
     Reporting,
     Completed,
@@ -170,6 +175,121 @@ impl fmt::Display for PortState {
     }
 }
 
+/// Operational stealth posture selected by the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StealthMode {
+    /// Standard scanner behavior (fast, explicit `tcpscan` signatures).
+    Normal,
+    /// Low-noise pacing: shuffled ports, jitter, rate ceiling and no active banners by default.
+    Stealth,
+    /// Corporate blend mode: human-like bursts, enterprise personas and adaptive pacing.
+    Mutable,
+}
+
+impl StealthMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Stealth => "stealth",
+            Self::Mutable => "mutable",
+        }
+    }
+}
+
+impl fmt::Display for StealthMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Legitimate-looking client identity used by the *mutable* traffic mutation layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficPersona {
+    /// Neutral browser-like client.
+    Generic,
+    /// Managed corporate workstation (Edge/Chrome + enterprise headers).
+    CorporateWorkstation,
+    /// Common desktop browser (Firefox).
+    Browser,
+    /// Windows Update / Delivery Optimization background agent.
+    MicrosoftUpdate,
+    /// Enterprise backup / BITS transfer agent.
+    BackupAgent,
+}
+
+impl TrafficPersona {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::CorporateWorkstation => "corporate",
+            Self::Browser => "browser",
+            Self::MicrosoftUpdate => "windows-update",
+            Self::BackupAgent => "backup-agent",
+        }
+    }
+}
+
+impl fmt::Display for TrafficPersona {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Anti-fingerprinting / anti-AI legitimacy envelope applied to Stage 2 and Stage 3.
+///
+/// **Authorized use only**: these controls reduce obvious scanner signatures and keep
+/// probe cadence inside normal enterprise traffic envelopes. They do not guarantee
+/// evasion of AI/ML, IDS/IPS or EDR products.
+#[derive(Debug, Clone)]
+pub struct StealthConfig {
+    /// Selected stealth posture.
+    pub mode: StealthMode,
+    /// Client identity used for HTTP banner requests in mutable mode.
+    pub persona: TrafficPersona,
+    /// Additional uniform random jitter applied to each inter-probe delay.
+    pub jitter: Duration,
+    /// Global probes-per-second ceiling (`0.0` = unlimited).
+    pub max_pps: f64,
+    /// Number of probes per burst before a longer pause (`0` = disabled).
+    pub burst_size: usize,
+    /// Pause inserted after each burst.
+    pub burst_pause: Duration,
+    /// Increase pacing when filtered/dropped probes suggest defensive feedback.
+    pub adaptive_backoff: bool,
+    /// Number of decoy probes interleaved against the *same authorized target*.
+    pub decoy_probes: usize,
+    /// Enable the anti-AI legitimacy envelope bookkeeping/assessment.
+    pub ai_filter: bool,
+}
+
+impl Default for StealthConfig {
+    fn default() -> Self {
+        Self {
+            mode: StealthMode::Normal,
+            persona: TrafficPersona::Generic,
+            jitter: Duration::ZERO,
+            max_pps: 0.0,
+            burst_size: 0,
+            burst_pause: Duration::ZERO,
+            adaptive_backoff: false,
+            decoy_probes: 0,
+            ai_filter: false,
+        }
+    }
+}
+
+impl StealthConfig {
+    /// True when any legitimacy-envelope control is active.
+    pub fn is_active(&self) -> bool {
+        self.mode != StealthMode::Normal
+            || !self.jitter.is_zero()
+            || self.max_pps > 0.0
+            || self.burst_size > 0
+            || self.adaptive_backoff
+            || self.ai_filter
+    }
+}
+
 /// Configuration parameters for `ScannerColleague` (Stage 2).
 #[derive(Debug, Clone)]
 pub struct ScannerConfig {
@@ -181,6 +301,8 @@ pub struct ScannerConfig {
     pub retries: u8,
     /// Optional delay between consecutive probes per worker (stealth / rate-limiting).
     pub delay: Duration,
+    /// Stealth, mutable and anti-AI legitimacy envelope settings.
+    pub stealth: StealthConfig,
 }
 
 impl Default for ScannerConfig {
@@ -190,6 +312,7 @@ impl Default for ScannerConfig {
             timeout: Duration::from_millis(1000),
             retries: 0,
             delay: Duration::ZERO,
+            stealth: StealthConfig::default(),
         }
     }
 }
@@ -226,7 +349,154 @@ impl EnrichedPortResult {
     }
 }
 
-/// Cybersecurity risk severity assigned by `AuditColleague` (Stage 4).
+/// Deception verdict assigned by `HoneypotColleague` (Stage 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HoneypotVerdict {
+    /// No deception indicators observed.
+    Clean,
+    /// Several weak/medium indicators suggest a possible deceptive environment.
+    PossibleHoneypot,
+    /// Strong indicators: known honeypot signature, contradictory services or mass exposure.
+    Honeypot,
+}
+
+impl HoneypotVerdict {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::PossibleHoneypot => "possible-honeypot",
+            Self::Honeypot => "honeypot",
+        }
+    }
+
+    /// Compact label used by the human report.
+    pub fn badge(&self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::PossibleHoneypot => "POSSIBLE",
+            Self::Honeypot => "HONEYPOT",
+        }
+    }
+}
+
+impl fmt::Display for HoneypotVerdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Observable behaviors that increase the deception confidence score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoneypotBehavior {
+    /// Banner matches Cowrie, Kippo, Dionaea, Thinkst Canary, Honeyd, etc.
+    KnownHoneypotSignature,
+    /// Port is frequently used by honeypot deployments.
+    HoneypotPort,
+    /// Banner protocol contradicts the port/service identity.
+    ServicePortMismatch,
+    /// A single banner mixes multiple incompatible protocols.
+    ContradictoryBanner,
+    /// Abnormally slow handshake, consistent with a tarpit.
+    TarpitLatency,
+    /// A large fraction/quantity of scanned ports is open.
+    MassOpenServices,
+    /// Suspiciously uniform RTT across many open ports (synthetic responders).
+    UniformRtt,
+    /// Multiple services return the exact same banner.
+    ClonedBanners,
+    /// Interactive credential prompt exposed by an unexpected service.
+    DefaultCredentialPrompt,
+    /// Legacy/fake version string commonly used by deception frameworks.
+    FakeVersionDisclosure,
+    /// Interactive service accepted the connection but returned no banner.
+    BannerlessInteractiveService,
+    /// Service exposed on an ephemeral/high port.
+    UnusualEphemeralService,
+    /// Multiple known honeypot ports are open on the same target.
+    HoneypotPortCluster,
+}
+
+impl HoneypotBehavior {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::KnownHoneypotSignature => "known-honeypot-signature",
+            Self::HoneypotPort => "honeypot-port",
+            Self::ServicePortMismatch => "service-port-mismatch",
+            Self::ContradictoryBanner => "contradictory-banner",
+            Self::TarpitLatency => "tarpit-latency",
+            Self::MassOpenServices => "mass-open-services",
+            Self::UniformRtt => "uniform-rtt",
+            Self::ClonedBanners => "cloned-banners",
+            Self::DefaultCredentialPrompt => "default-credential-prompt",
+            Self::FakeVersionDisclosure => "fake-version-disclosure",
+            Self::BannerlessInteractiveService => "bannerless-interactive-service",
+            Self::UnusualEphemeralService => "unusual-ephemeral-service",
+            Self::HoneypotPortCluster => "honeypot-port-cluster",
+        }
+    }
+
+    /// Weight contributed to the 0..=100 deception confidence score.
+    pub fn weight(&self) -> u8 {
+        match self {
+            Self::KnownHoneypotSignature => 80,
+            Self::HoneypotPort => 20,
+            Self::ServicePortMismatch => 35,
+            Self::ContradictoryBanner => 30,
+            Self::TarpitLatency => 20,
+            Self::MassOpenServices => 45,
+            Self::UniformRtt => 20,
+            Self::ClonedBanners => 25,
+            Self::DefaultCredentialPrompt => 20,
+            Self::FakeVersionDisclosure => 15,
+            Self::BannerlessInteractiveService => 10,
+            Self::UnusualEphemeralService => 10,
+            Self::HoneypotPortCluster => 20,
+        }
+    }
+}
+
+impl fmt::Display for HoneypotBehavior {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Per-port deception assessment produced by `HoneypotColleague` (Stage 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoneypotAssessment {
+    pub port: u16,
+    pub verdict: HoneypotVerdict,
+    pub score: u8,
+    pub behaviors: Vec<HoneypotBehavior>,
+    pub notes: String,
+}
+
+impl HoneypotAssessment {
+    /// Neutral assessment for closed/filtered ports or when no signal is present.
+    pub fn clean(port: u16) -> Self {
+        Self {
+            port,
+            verdict: HoneypotVerdict::Clean,
+            score: 0,
+            behaviors: Vec::new(),
+            notes: String::new(),
+        }
+    }
+
+    pub fn is_suspicious(&self) -> bool {
+        self.verdict != HoneypotVerdict::Clean
+    }
+
+    pub fn behavior_summary(&self) -> String {
+        self.behaviors
+            .iter()
+            .map(HoneypotBehavior::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Cybersecurity risk severity assigned by `AuditColleague` (Stage 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RiskLevel {
     None,
@@ -267,7 +537,7 @@ impl fmt::Display for RiskLevel {
     }
 }
 
-/// Complete per-port record after `AuditColleague` (Stage 4) evaluation.
+/// Complete per-port record after `AuditColleague` (Stage 5) evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditedPortResult {
     pub port: u16,
@@ -278,6 +548,8 @@ pub struct AuditedPortResult {
     pub risk: RiskLevel,
     pub category: &'static str,
     pub advisory: String,
+    /// Deception/honeypot behavior classification attached by Stage 4.
+    pub honeypot: HoneypotAssessment,
 }
 
 impl AuditedPortResult {
@@ -286,7 +558,7 @@ impl AuditedPortResult {
     }
 }
 
-/// Aggregate cybersecurity posture summary produced by `AuditColleague` (Stage 4).
+/// Aggregate cybersecurity posture summary produced by `AuditColleague` (Stage 5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityPostureSummary {
     pub total_scanned: usize,
@@ -300,9 +572,49 @@ pub struct SecurityPostureSummary {
     pub exposure_score: u8,
     pub posture_grade: char,
     pub firewall_detected: bool,
+    /// Ports classified as `PossibleHoneypot` by Stage 4.
+    pub possible_honeypot_count: usize,
+    /// Ports classified as confirmed `Honeypot` by Stage 4.
+    pub confirmed_honeypot_count: usize,
 }
 
-/// Supported report output formats in `ReportColleague` (Stage 5).
+/// Stealth / anti-AI legitimacy telemetry rendered in the final report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StealthTelemetry {
+    pub mode: StealthMode,
+    pub persona: TrafficPersona,
+    pub ai_filter: bool,
+    pub max_pps: f64,
+    pub jitter_ms: u64,
+    pub burst_size: usize,
+    pub burst_pause_ms: u64,
+    pub decoy_probes: usize,
+    pub adaptive_backoff: bool,
+    pub filtered_ratio_pct: u8,
+    pub legitimacy_score: u8,
+    pub legitimacy_grade: char,
+}
+
+impl Default for StealthTelemetry {
+    fn default() -> Self {
+        Self {
+            mode: StealthMode::Normal,
+            persona: TrafficPersona::Generic,
+            ai_filter: false,
+            max_pps: 0.0,
+            jitter_ms: 0,
+            burst_size: 0,
+            burst_pause_ms: 0,
+            decoy_probes: 0,
+            adaptive_backoff: false,
+            filtered_ratio_pct: 0,
+            legitimacy_score: 50,
+            legitimacy_grade: 'D',
+        }
+    }
+}
+
+/// Supported report output formats in `ReportColleague` (Stage 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     Human,
@@ -310,7 +622,7 @@ pub enum OutputFormat {
     Csv,
 }
 
-/// Options controlling `ReportColleague` (Stage 5) rendering.
+/// Options controlling `ReportColleague` (Stage 6) rendering.
 #[derive(Debug, Clone)]
 pub struct ReportOptions {
     pub format: OutputFormat,
@@ -332,17 +644,16 @@ impl Default for ReportOptions {
 #[derive(Debug, Clone)]
 pub enum ScanEvent {
     /// Emitted by `DiscoveryColleague` when DNS resolution and port bitmap expansion succeed.
-    TargetDiscovered {
-        target: TargetInfo,
-        ports: Vec<u16>,
-    },
+    TargetDiscovered { target: TargetInfo, ports: Vec<u16> },
     /// Emitted by `ScannerColleague` when the concurrent TCP probing batch finishes.
-    ProbingCompleted {
-        raw_results: Vec<RawProbeResult>,
-    },
+    ProbingCompleted { raw_results: Vec<RawProbeResult> },
     /// Emitted by `FingerprintColleague` when service mapping & banner enrichment finish.
     FingerprintingCompleted {
         enriched_results: Vec<EnrichedPortResult>,
+    },
+    /// Emitted by `HoneypotColleague` when deception behavior analysis finishes.
+    HoneypotAssessmentCompleted {
+        assessments: Vec<HoneypotAssessment>,
     },
     /// Emitted by `AuditColleague` when a `Critical` risk service is identified.
     CriticalFindingDetected {
@@ -356,9 +667,7 @@ pub enum ScanEvent {
         summary: SecurityPostureSummary,
     },
     /// Emitted by `ReportColleague` when the final output string has been rendered.
-    ReportRendered {
-        formatted_report: String,
-    },
+    ReportRendered { formatted_report: String },
 }
 
 impl ScanEvent {
@@ -368,6 +677,7 @@ impl ScanEvent {
             Self::TargetDiscovered { .. } => "TargetDiscovered",
             Self::ProbingCompleted { .. } => "ProbingCompleted",
             Self::FingerprintingCompleted { .. } => "FingerprintingCompleted",
+            Self::HoneypotAssessmentCompleted { .. } => "HoneypotAssessmentCompleted",
             Self::CriticalFindingDetected { .. } => "CriticalFindingDetected",
             Self::AuditCompleted { .. } => "AuditCompleted",
             Self::ReportRendered { .. } => "ReportRendered",
@@ -384,6 +694,12 @@ pub enum MediatorDirective {
     PublicTargetHardeningMode,
     /// High packet filter rate detected: Mediator flags active firewall presence.
     FirewallDropDetected { filtered_ports: usize },
+    /// Stealth/mutable mode observed defensive feedback and engaged adaptive pacing.
+    AdaptivePacingEngaged { filtered_rate_pct: u8 },
+    /// Stage 4 found weak/medium deception indicators.
+    PossibleHoneypotDetected { count: usize },
+    /// Stage 4 found strong deception indicators (known honeypot or contradictory behavior).
+    ConfirmedHoneypotDetected { count: usize },
     /// Immediate alert recorded due to critical exposure (`CriticalFindingDetected`).
     EscalateCriticalAlert { port: u16, service: String },
 }

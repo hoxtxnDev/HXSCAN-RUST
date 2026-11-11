@@ -1,8 +1,17 @@
-//! # `tcpscan` (HXSCAN-RUST v2.0 — Mediator Pattern Architecture)
+//! # `tcpscan` (HXSCAN-RUST v2.1 — Mediator Pattern Architecture)
 //!
 //! High-performance, zero-dependency, staged modular TCP port scanner and
 //! cybersecurity auditing toolkit built around the **Mediator Design Pattern**
 //! (also known as *Intermediary* or *Controller*).
+//!
+//! ## v2.1 Highlights
+//! - **Stealth mode**: jittered, rate-capped, shuffled probes with adaptive backoff.
+//! - **Mutable mode**: enterprise traffic personas, human-like bursts and mutated HTTP headers.
+//! - **Anti-AI legitimacy envelope**: bounded probe cadence, decoy probes on the same target
+//!   and an honest legitimacy self-assessment for the final report.
+//! - **Behavioral honeypot classification**: per-port `possible-honeypot` / `honeypot`
+//!   verdicts with explainable behavior flags (Cowrie/Kippo signatures, protocol mismatches,
+//!   mass-open services, uniform RTT, cloned banners, tarpits and more).
 //!
 //! ## Origin Host Security & Hardening (`#![forbid(unsafe_code)]`)
 //! - **100% Safe Rust**: `#![forbid(unsafe_code)]` enforced across all targets.
@@ -18,16 +27,19 @@
 pub mod cli;
 pub mod mediator;
 pub mod stages;
+pub mod stealth;
 
 pub use cli::{
-    parse_cli_args, CliAction, ScanProfile, MAX_DELAY_MS, MAX_RETRIES, MAX_SAFE_THREADS,
-    MAX_TIMEOUT_SECS, MIN_TIMEOUT_SECS,
+    parse_cli_args, CliAction, ScanProfile, MAX_BURST_PAUSE_MS, MAX_BURST_SIZE, MAX_DECOY_PROBES,
+    MAX_DELAY_MS, MAX_JITTER_MS, MAX_PPS, MAX_RETRIES, MAX_SAFE_THREADS, MAX_TIMEOUT_SECS,
+    MIN_TIMEOUT_SECS,
 };
 pub use mediator::{
-    AddressScope, AuditedPortResult, ComponentId, EnrichedPortResult, MediatedEventRecord,
-    MediatorDirective, MediatorState, OutputFormat, PipelineConfig, PipelineOutput, PortState,
-    RawProbeResult, ReportOptions, RiskLevel, ScanController, ScanEvent, ScanMediator,
-    ScannerConfig, SecurityPostureSummary, TargetInfo,
+    AddressScope, AuditedPortResult, ComponentId, EnrichedPortResult, HoneypotAssessment,
+    HoneypotBehavior, HoneypotVerdict, MediatedEventRecord, MediatorDirective, MediatorState,
+    OutputFormat, PipelineConfig, PipelineOutput, PortState, RawProbeResult, ReportOptions,
+    RiskLevel, ScanController, ScanEvent, ScanMediator, ScannerConfig, SecurityPostureSummary,
+    StealthConfig, StealthMode, StealthTelemetry, TargetInfo, TrafficPersona,
 };
 pub use stages::stage1_discovery::{
     parse_port_spec, resolve_target, shuffle_ports, validate_ip_safety, DiscoveryColleague,
@@ -41,9 +53,19 @@ pub use stages::stage3_fingerprint::{
     enrich_probe_results, get_service_name, grab_banner_from_rw, grab_banner_from_stream,
     infer_service_from_banner, sanitize_banner, FingerprintColleague, SERVICE_TABLE,
 };
-pub use stages::stage4_audit::{evaluate_port_security, execute_audit_stage, AuditColleague};
-pub use stages::stage5_report::{render_report, sanitize_csv_cell, ReportColleague};
+pub use stages::stage4_honeypot::{analyze_honeypots, evaluate_honeypot_port, HoneypotColleague};
+pub use stages::stage5_audit::{
+    evaluate_port_security, evaluate_port_security_with_honeypot, execute_audit_stage,
+    execute_audit_stage_with_honeypots, AuditColleague,
+};
+pub use stages::stage6_report::{
+    render_report, render_report_with_stealth, sanitize_csv_cell, ReportColleague,
+};
 pub use stages::ScanPipeline;
+pub use stealth::{
+    assess_legitimacy, build_http_probe, build_work_plan, evaluate_scan_legitimacy,
+    filtered_ratio_pct, next_rand, PacingController,
+};
 
 /// Execute the CLI workflow from an iterator of argument strings (excluding program name).
 ///

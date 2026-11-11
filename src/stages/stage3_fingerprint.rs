@@ -15,8 +15,9 @@ use std::time::Duration;
 
 use crate::mediator::{
     ComponentId, EnrichedPortResult, MediatorDirective, PortState, RawProbeResult, ScanController,
-    ScanEvent, ScanMediator,
+    ScanEvent, ScanMediator, TrafficPersona,
 };
+use crate::stealth::build_http_probe;
 
 /// Compile-time sorted `(port, service_name)` table covering all original `hxscan` services
 /// plus key enterprise, cloud, and cybersecurity infrastructure ports.
@@ -102,6 +103,21 @@ impl FingerprintColleague {
         banner_timeout: Duration,
     ) -> Option<String> {
         grab_banner_from_stream(port, stream, banner_timeout)
+    }
+
+    /// Persona-aware variant used by the Mediator in `stealth`/`mutable` modes.
+    /// Mutates HTTP headers so the active probe resembles ordinary enterprise traffic.
+    pub fn inspect_live_stream_with_persona(
+        port: u16,
+        stream: &mut TcpStream,
+        banner_timeout: Duration,
+        persona: TrafficPersona,
+        host: &str,
+        seed: u64,
+    ) -> Option<String> {
+        let _ = stream.set_read_timeout(Some(banner_timeout));
+        let _ = stream.set_write_timeout(Some(banner_timeout));
+        grab_banner_from_rw_with_persona(port, stream, persona, host, seed)
     }
 
     /// Enrich all raw probe results stored in the Mediator and emit [`ScanEvent::FingerprintingCompleted`].
@@ -247,7 +263,8 @@ pub fn infer_service_from_banner(banner: &str) -> Option<&'static str> {
         Some("SMTP")
     } else if upper.starts_with("220 ") && upper.contains("FTP") {
         Some("FTP")
-    } else if upper.starts_with("+PONG") || upper.starts_with("-NOAUTH") || upper.contains("REDIS") {
+    } else if upper.starts_with("+PONG") || upper.starts_with("-NOAUTH") || upper.contains("REDIS")
+    {
         Some("Redis")
     } else if upper.starts_with("+OK") {
         Some("POP3")
@@ -267,9 +284,8 @@ pub fn grab_banner_from_rw<S: Read + Write>(port: u16, stream: &mut S) -> Option
     let mut buf = [0u8; 512];
 
     if is_http_like_port(port) {
-        let _ = stream.write_all(
-            b"HEAD / HTTP/1.0\r\nUser-Agent: tcpscan/2.0\r\nConnection: close\r\n\r\n",
-        );
+        let _ = stream
+            .write_all(b"HEAD / HTTP/1.0\r\nUser-Agent: tcpscan/2.1\r\nConnection: close\r\n\r\n");
         if let Ok(n) = stream.read(&mut buf) {
             if n > 0 {
                 return sanitize_banner(&buf[..n]);
@@ -290,6 +306,53 @@ pub fn grab_banner_from_rw<S: Read + Write>(port: u16, stream: &mut S) -> Option
 
     if get_service_name(port) == "unknown" {
         let _ = stream.write_all(b"HEAD / HTTP/1.0\r\nConnection: close\r\n\r\n");
+        if let Ok(n) = stream.read(&mut buf) {
+            if n > 0 {
+                return sanitize_banner(&buf[..n]);
+            }
+        }
+    }
+
+    None
+}
+
+/// Protocol-aware banner reader with enterprise persona mutation.
+///
+/// HTTP-like probes use realistic browser/update-agent headers instead of the
+/// explicit `tcpscan` User-Agent. Non-HTTP protocols preserve their original probe.
+pub fn grab_banner_from_rw_with_persona<S: Read + Write>(
+    port: u16,
+    stream: &mut S,
+    persona: TrafficPersona,
+    host: &str,
+    seed: u64,
+) -> Option<String> {
+    let mut buf = [0u8; 512];
+
+    if is_http_like_port(port) {
+        let request = build_http_probe(persona, host, seed);
+        let _ = stream.write_all(&request);
+        if let Ok(n) = stream.read(&mut buf) {
+            if n > 0 {
+                return sanitize_banner(&buf[..n]);
+            }
+        }
+        return None;
+    }
+
+    if port == 6379 {
+        let _ = stream.write_all(b"PING\r\n");
+    }
+
+    if let Ok(n) = stream.read(&mut buf) {
+        if n > 0 {
+            return sanitize_banner(&buf[..n]);
+        }
+    }
+
+    if get_service_name(port) == "unknown" {
+        let request = build_http_probe(persona, host, seed);
+        let _ = stream.write_all(&request);
         if let Ok(n) = stream.read(&mut buf) {
             if n > 0 {
                 return sanitize_banner(&buf[..n]);
@@ -462,6 +525,24 @@ mod tests {
         let s_banner = grab_banner_from_rw(22, &mut ssh_mock).unwrap();
         assert_eq!(s_banner, "SSH-2.0-OpenSSH_9.8");
         assert!(ssh_mock.written_data.is_empty());
+    }
+
+    #[test]
+    fn test_grab_banner_with_persona_mutates_http_headers() {
+        let mut mock = MockStream::new(b"HTTP/1.1 200 OK\r\nServer: nginx\r\n\r\n");
+        let banner = grab_banner_from_rw_with_persona(
+            80,
+            &mut mock,
+            TrafficPersona::CorporateWorkstation,
+            "portal.example.test",
+            7,
+        )
+        .unwrap();
+        assert!(banner.contains("HTTP/1.1 200 OK"));
+        let written = String::from_utf8_lossy(&mock.written_data);
+        assert!(written.starts_with("GET / HTTP/1.1"));
+        assert!(written.contains("Host: portal.example.test"));
+        assert!(!written.to_ascii_lowercase().contains("tcpscan"));
     }
 
     #[test]

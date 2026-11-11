@@ -1,34 +1,40 @@
-//! # Stage 4 Colleague: `AuditColleague` (`stage4_audit`)
+//! # Stage 5 Colleague: `AuditColleague` (`stage5_audit`)
 //!
 //! Concrete Colleague in the **Mediator Pattern** responsible for:
 //! 1. Assigning a [`RiskLevel`] (`None`, `Info`, `Low`, `Medium`, `High`, `Critical`) based on
 //!    protocol cleartext exposure, lateral-movement potential, database exposure, network scope
 //!    (`Public` vs `Loopback`), and active banner indicators.
-//! 2. Emitting immediate [`ScanEvent::CriticalFindingDetected`] notifications to the [`ScanController`]
+//! 2. Attaching the Stage 4 [`HoneypotAssessment`] to every audited port and counting
+//!    possible/confirmed deception verdicts in the [`SecurityPostureSummary`].
+//! 3. Emitting immediate [`ScanEvent::CriticalFindingDetected`] notifications to the [`ScanController`]
 //!    Mediator whenever a `Critical` risk exposure is identified.
-//! 3. Emitting [`ScanEvent::AuditCompleted`] with the [`SecurityPostureSummary`] (`0..=100` score & grade `A`–`F`).
+//! 4. Emitting [`ScanEvent::AuditCompleted`] with the [`SecurityPostureSummary`] (`0..=100` score & grade `A`–`F`).
 //!
-//! **Decoupling Guarantee**: Zero imports from `stage1`, `stage2`, `stage3`, or `stage5`.
+//! **Decoupling Guarantee**: Zero imports from `stage1`, `stage2`, `stage3`, `stage4` or `stage6`.
 
 use crate::mediator::{
-    AddressScope, AuditedPortResult, ComponentId, EnrichedPortResult, MediatorDirective, PortState,
-    RiskLevel, ScanController, ScanEvent, ScanMediator, SecurityPostureSummary,
+    AddressScope, AuditedPortResult, ComponentId, EnrichedPortResult, HoneypotAssessment,
+    HoneypotVerdict, MediatorDirective, MediatorState, PortState, RiskLevel, ScanController,
+    ScanEvent, ScanMediator, SecurityPostureSummary,
 };
 
-/// **Colleague 4 (`AuditColleague`)**: Cybersecurity Risk & Attack Surface Audit Colleague.
+/// **Colleague 5 (`AuditColleague`)**: Cybersecurity Risk & Attack Surface Audit Colleague.
 pub struct AuditColleague;
 
 impl AuditColleague {
     /// Evaluate all enriched port results from the Mediator, emit [`ScanEvent::CriticalFindingDetected`]
     /// for each critical finding, and finish with [`ScanEvent::AuditCompleted`].
     pub fn run(mediator: &mut ScanController) -> MediatorDirective {
+        mediator.transition_to(MediatorState::Auditing);
         let scope = mediator
             .target
             .as_ref()
             .map(|t| t.scope)
             .unwrap_or(AddressScope::Private);
         let enriched = std::mem::take(&mut mediator.enriched_results);
-        let (audited_results, summary) = execute_audit_stage(enriched, scope);
+        let honeypots = mediator.honeypot_assessments.clone();
+        let (audited_results, summary) =
+            execute_audit_stage_with_honeypots(enriched, scope, &honeypots);
 
         // Notify the Mediator immediately for each critical security finding
         for item in &audited_results {
@@ -55,9 +61,16 @@ impl AuditColleague {
 }
 
 /// Evaluate a single [`EnrichedPortResult`] in the context of the target's [`AddressScope`].
-pub fn evaluate_port_security(
+pub fn evaluate_port_security(item: EnrichedPortResult, scope: AddressScope) -> AuditedPortResult {
+    let honeypot = HoneypotAssessment::clean(item.port);
+    evaluate_port_security_with_honeypot(item, scope, honeypot)
+}
+
+/// Evaluate an [`EnrichedPortResult`] and attach its Stage 4 deception assessment.
+pub fn evaluate_port_security_with_honeypot(
     item: EnrichedPortResult,
     scope: AddressScope,
+    honeypot: HoneypotAssessment,
 ) -> AuditedPortResult {
     if item.state != PortState::Open {
         let (category, advisory) = match item.state {
@@ -79,6 +92,7 @@ pub fn evaluate_port_security(
             risk: RiskLevel::None,
             category,
             advisory,
+            honeypot,
         };
     }
 
@@ -93,8 +107,9 @@ pub fn evaluate_port_security(
         let upper = banner.to_ascii_uppercase();
         if upper.starts_with("+PONG") {
             risk = RiskLevel::Critical;
-            advisory = "Unauthenticated Redis instance (+PONG); enforce requirepass & bind 127.0.0.1"
-                .to_string();
+            advisory =
+                "Unauthenticated Redis instance (+PONG); enforce requirepass & bind 127.0.0.1"
+                    .to_string();
         } else if upper.contains("VSFTPD 2.3.4") {
             risk = RiskLevel::Critical;
             advisory = "Backdoored vsFTPd 2.3.4 banner detected (CVE-2011-2523)!".to_string();
@@ -117,6 +132,7 @@ pub fn evaluate_port_security(
         risk,
         category,
         advisory,
+        honeypot,
     }
 }
 
@@ -224,10 +240,19 @@ fn classify_open_port(port: u16, service: &str) -> (RiskLevel, &'static str, Str
     }
 }
 
-/// Run Stage 4 audit across all enriched port results and compute the [`SecurityPostureSummary`].
+/// Run Stage 5 audit across all enriched port results and compute the [`SecurityPostureSummary`].
 pub fn execute_audit_stage(
     enriched: Vec<EnrichedPortResult>,
     scope: AddressScope,
+) -> (Vec<AuditedPortResult>, SecurityPostureSummary) {
+    execute_audit_stage_with_honeypots(enriched, scope, &[])
+}
+
+/// Run Stage 5 audit attaching Stage 4 honeypot assessments by port.
+pub fn execute_audit_stage_with_honeypots(
+    enriched: Vec<EnrichedPortResult>,
+    scope: AddressScope,
+    honeypots: &[HoneypotAssessment],
 ) -> (Vec<AuditedPortResult>, SecurityPostureSummary) {
     let total_scanned = enriched.len();
     let mut open_count = 0usize;
@@ -237,12 +262,19 @@ pub fn execute_audit_stage(
     let mut critical_count = 0usize;
     let mut high_count = 0usize;
     let mut medium_count = 0usize;
+    let mut possible_honeypot_count = 0usize;
+    let mut confirmed_honeypot_count = 0usize;
     let mut raw_risk_points = 0u32;
 
     let audited: Vec<AuditedPortResult> = enriched
         .into_iter()
         .map(|item| {
-            let res = evaluate_port_security(item, scope);
+            let assessment = honeypots
+                .iter()
+                .find(|assessment| assessment.port == item.port)
+                .cloned()
+                .unwrap_or_else(|| HoneypotAssessment::clean(item.port));
+            let res = evaluate_port_security_with_honeypot(item, scope, assessment);
             match res.state {
                 PortState::Open => {
                     open_count += 1;
@@ -252,6 +284,11 @@ pub fn execute_audit_stage(
                         RiskLevel::High => high_count += 1,
                         RiskLevel::Medium => medium_count += 1,
                         _ => {}
+                    }
+                    match res.honeypot.verdict {
+                        HoneypotVerdict::PossibleHoneypot => possible_honeypot_count += 1,
+                        HoneypotVerdict::Honeypot => confirmed_honeypot_count += 1,
+                        HoneypotVerdict::Clean => {}
                     }
                 }
                 PortState::Closed => closed_count += 1,
@@ -287,6 +324,8 @@ pub fn execute_audit_stage(
         exposure_score,
         posture_grade,
         firewall_detected: filtered_count > 0,
+        possible_honeypot_count,
+        confirmed_honeypot_count,
     };
 
     (audited, summary)

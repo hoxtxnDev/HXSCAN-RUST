@@ -1,21 +1,23 @@
-//! # Stage 5 Colleague: `ReportColleague` (`stage5_report`)
+//! # Stage 6 Colleague: `ReportColleague` (`stage6_report`)
 //!
 //! Concrete Colleague in the **Mediator Pattern** responsible for:
 //! 1. Rendering the audited results mediated by [`ScanController`] into `Human` (ANSI table),
 //!    `Json` (SIEM/SOAR), or `Csv` format.
-//! 2. Emitting [`ScanEvent::ReportRendered`] back to the [`ScanController`] Mediator.
+//! 2. Including stealth/anti-AI legitimacy telemetry and per-port honeypot behavior verdicts.
+//! 3. Emitting [`ScanEvent::ReportRendered`] back to the [`ScanController`] Mediator.
 //!
-//! **Decoupling Guarantee**: Zero imports from `stage1`, `stage2`, `stage3`, or `stage4`.
+//! **Decoupling Guarantee**: Zero imports from `stage1`, `stage2`, `stage3`, `stage4` or `stage5`.
 
 use std::fmt::Write as FmtWrite;
 use std::time::Duration;
 
 use crate::mediator::{
-    AuditedPortResult, ComponentId, MediatorDirective, OutputFormat, PortState, ReportOptions,
-    RiskLevel, ScanController, ScanEvent, ScanMediator, SecurityPostureSummary, TargetInfo,
+    AuditedPortResult, ComponentId, HoneypotVerdict, MediatorDirective, OutputFormat, PortState,
+    ReportOptions, RiskLevel, ScanController, ScanEvent, ScanMediator, SecurityPostureSummary,
+    StealthTelemetry, TargetInfo,
 };
 
-/// **Colleague 5 (`ReportColleague`)**: Multi-Format Telemetry & Reporting Colleague.
+/// **Colleague 6 (`ReportColleague`)**: Multi-Format Telemetry & Reporting Colleague.
 pub struct ReportColleague;
 
 impl ReportColleague {
@@ -29,13 +31,15 @@ impl ReportColleague {
             .summary
             .as_ref()
             .expect("SecurityPostureSummary must be present before ReportColleague runs");
+        let stealth = mediator.stealth_telemetry.clone().unwrap_or_default();
 
-        let formatted_report = render_report(
+        let formatted_report = render_report_with_stealth(
             target,
             &mediator.audited_results,
             summary,
             elapsed,
             &mediator.config.report_options,
+            &stealth,
         );
 
         mediator.notify(
@@ -45,7 +49,7 @@ impl ReportColleague {
     }
 }
 
-/// Render the complete Stage 5 report as a `String`.
+/// Backward-compatible report renderer (uses neutral stealth telemetry).
 pub fn render_report(
     target: &TargetInfo,
     results: &[AuditedPortResult],
@@ -53,9 +57,30 @@ pub fn render_report(
     elapsed: Duration,
     options: &ReportOptions,
 ) -> String {
+    render_report_with_stealth(
+        target,
+        results,
+        summary,
+        elapsed,
+        options,
+        &StealthTelemetry::default(),
+    )
+}
+
+/// Render the complete Stage 6 report with stealth/anti-AI telemetry.
+pub fn render_report_with_stealth(
+    target: &TargetInfo,
+    results: &[AuditedPortResult],
+    summary: &SecurityPostureSummary,
+    elapsed: Duration,
+    options: &ReportOptions,
+    stealth: &StealthTelemetry,
+) -> String {
     match options.format {
-        OutputFormat::Human => render_human_report(target, results, summary, elapsed, options),
-        OutputFormat::Json => render_json_report(target, results, summary, elapsed),
+        OutputFormat::Human => {
+            render_human_report(target, results, summary, elapsed, options, stealth)
+        }
+        OutputFormat::Json => render_json_report(target, results, summary, elapsed, stealth),
         OutputFormat::Csv => render_csv_report(target, results),
     }
 }
@@ -90,12 +115,22 @@ fn state_badge(state: &PortState, use_color: bool) -> String {
     }
 }
 
+fn honeypot_badge(verdict: HoneypotVerdict, use_color: bool) -> String {
+    let padded = format!("{:<10}", verdict.badge());
+    match verdict {
+        HoneypotVerdict::Clean => colorize(&padded, "90", use_color),
+        HoneypotVerdict::PossibleHoneypot => colorize(&padded, "33", use_color),
+        HoneypotVerdict::Honeypot => colorize(&padded, "1;35", use_color),
+    }
+}
+
 fn render_human_report(
     target: &TargetInfo,
     results: &[AuditedPortResult],
     summary: &SecurityPostureSummary,
     elapsed: Duration,
     options: &ReportOptions,
+    stealth: &StealthTelemetry,
 ) -> String {
     let mut out = String::with_capacity(2048);
     let c = options.use_color;
@@ -114,7 +149,7 @@ fn render_human_report(
         let _ = writeln!(
             out,
             "{} — {} ({}) [Scope: {}]",
-            colorize("TCPSCAN / HXSCAN v2.0 Audit Report", "1;36", c),
+            colorize("TCPSCAN / HXSCAN v2.1 Audit Report", "1;36", c),
             target.raw_input,
             target.primary_ip,
             target.scope
@@ -123,7 +158,7 @@ fn render_human_report(
         let _ = writeln!(
             out,
             "{} — {} [Scope: {}]",
-            colorize("TCPSCAN / HXSCAN v2.0 Audit Report", "1;36", c),
+            colorize("TCPSCAN / HXSCAN v2.1 Audit Report", "1;36", c),
             target.primary_ip,
             target.scope
         );
@@ -133,7 +168,20 @@ fn render_human_report(
         "Duration: {:.2}ms | Throughput: {:.0} ports/s | Firewall Drop Detected: {}",
         elapsed.as_secs_f64() * 1000.0,
         rate,
-        if summary.firewall_detected { "Yes" } else { "No" }
+        if summary.firewall_detected {
+            "Yes"
+        } else {
+            "No"
+        }
+    );
+    let _ = writeln!(
+        out,
+        "Mode: {} | Persona: {} | AI-Filter: {} | Legitimacy: {}/100 ({})",
+        stealth.mode,
+        stealth.persona,
+        if stealth.ai_filter { "on" } else { "off" },
+        stealth.legitimacy_score,
+        stealth.legitimacy_grade
     );
     let _ = writeln!(out, "{sep}");
 
@@ -147,8 +195,8 @@ fn render_human_report(
     } else {
         let _ = writeln!(
             out,
-            "\n{:<8} {:<10} {:<10} {:<16} {:<8} {}",
-            "Port", "State", "RTT", "Service", "Risk", "Banner / Details"
+            "\n{:<8} {:<10} {:<10} {:<16} {:<8} {:<10} {}",
+            "Port", "State", "RTT", "Service", "Risk", "Honeypot", "Banner / Details"
         );
         let _ = writeln!(out, "{subsep}");
 
@@ -160,12 +208,13 @@ fn render_human_report(
             let detail = r.banner.as_deref().unwrap_or(r.category);
             let _ = writeln!(
                 out,
-                "{:<8} {} {:<10} {:<16} {} {}",
+                "{:<8} {} {:<10} {:<16} {} {} {}",
                 r.port,
                 state_badge(&r.state, c),
                 rtt_str,
                 r.service,
                 risk_badge(r.risk, c),
+                honeypot_badge(r.honeypot.verdict, c),
                 detail
             );
         }
@@ -179,12 +228,13 @@ fn render_human_report(
                 let detail = r.banner.as_deref().unwrap_or(r.category);
                 let _ = writeln!(
                     out,
-                    "{:<8} {} {:<10} {:<16} {} {}",
+                    "{:<8} {} {:<10} {:<16} {} {} {}",
                     r.port,
                     state_badge(&r.state, c),
                     rtt_str,
                     r.service,
                     risk_badge(r.risk, c),
+                    honeypot_badge(r.honeypot.verdict, c),
                     detail
                 );
             }
@@ -208,13 +258,43 @@ fn render_human_report(
         }
     }
 
+    let suspicious: Vec<&AuditedPortResult> = results
+        .iter()
+        .filter(|r| r.honeypot.is_suspicious())
+        .collect();
     let _ = writeln!(
         out,
-        "\nScanned: {} port(s) | Open: {} | Closed: {} | Filtered: {} | Posture Grade: {} (Score: {}/100)",
+        "\n{}",
+        colorize("[Honeypot & Deception Behavior Analysis]", "1;35", c)
+    );
+    if suspicious.is_empty() {
+        let _ = writeln!(out, "  No deception indicators detected.");
+    } else {
+        for r in suspicious {
+            let _ = writeln!(
+                out,
+                "  • Port {:<5} ({}): {} {}/100 — {}",
+                r.port,
+                r.service,
+                r.honeypot.verdict.badge(),
+                r.honeypot.score,
+                r.honeypot.behavior_summary()
+            );
+            if !r.honeypot.notes.is_empty() {
+                let _ = writeln!(out, "    {}", r.honeypot.notes);
+            }
+        }
+    }
+
+    let _ = writeln!(
+        out,
+        "\nScanned: {} port(s) | Open: {} | Closed: {} | Filtered: {} | Honeypots: {} confirmed / {} possible | Posture Grade: {} (Score: {}/100)",
         summary.total_scanned,
         summary.open_count,
         summary.closed_count,
         summary.filtered_count,
+        summary.confirmed_honeypot_count,
+        summary.possible_honeypot_count,
         summary.posture_grade,
         summary.exposure_score
     );
@@ -246,11 +326,12 @@ fn render_json_report(
     results: &[AuditedPortResult],
     summary: &SecurityPostureSummary,
     elapsed: Duration,
+    stealth: &StealthTelemetry,
 ) -> String {
     let mut out = String::with_capacity(2048);
     let _ = writeln!(out, "{{");
     let _ = writeln!(out, "  \"scanner\": \"tcpscan-rs\",");
-    let _ = writeln!(out, "  \"version\": \"2.0.0\",");
+    let _ = writeln!(out, "  \"version\": \"2.1.0\",");
     let _ = writeln!(out, "  \"pattern\": \"Mediator\",");
     let _ = writeln!(
         out,
@@ -266,7 +347,23 @@ fn render_json_report(
     );
     let _ = writeln!(
         out,
-        "  \"summary\": {{ \"total_scanned\": {}, \"open\": {}, \"closed\": {}, \"filtered\": {}, \"errors\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"exposure_score\": {}, \"posture_grade\": \"{}\", \"firewall_detected\": {} }},",
+        "  \"stealth\": {{ \"mode\": \"{}\", \"persona\": \"{}\", \"ai_filter\": {}, \"max_pps\": {}, \"jitter_ms\": {}, \"burst_size\": {}, \"burst_pause_ms\": {}, \"decoy_probes\": {}, \"adaptive_backoff\": {}, \"filtered_ratio_pct\": {}, \"legitimacy_score\": {}, \"legitimacy_grade\": \"{}\" }},",
+        stealth.mode.as_str(),
+        stealth.persona.as_str(),
+        stealth.ai_filter,
+        stealth.max_pps,
+        stealth.jitter_ms,
+        stealth.burst_size,
+        stealth.burst_pause_ms,
+        stealth.decoy_probes,
+        stealth.adaptive_backoff,
+        stealth.filtered_ratio_pct,
+        stealth.legitimacy_score,
+        stealth.legitimacy_grade
+    );
+    let _ = writeln!(
+        out,
+        "  \"summary\": {{ \"total_scanned\": {}, \"open\": {}, \"closed\": {}, \"filtered\": {}, \"errors\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"exposure_score\": {}, \"posture_grade\": \"{}\", \"firewall_detected\": {}, \"possible_honeypots\": {}, \"confirmed_honeypots\": {} }},",
         summary.total_scanned,
         summary.open_count,
         summary.closed_count,
@@ -277,7 +374,9 @@ fn render_json_report(
         summary.medium_count,
         summary.exposure_score,
         summary.posture_grade,
-        summary.firewall_detected
+        summary.firewall_detected,
+        summary.possible_honeypot_count,
+        summary.confirmed_honeypot_count
     );
     let _ = writeln!(out, "  \"ports\": [");
 
@@ -291,9 +390,23 @@ fn render_json_report(
             Some(ms) => format!("{ms:.3}"),
             None => "null".to_string(),
         };
+        let behaviors_json = r
+            .honeypot
+            .behaviors
+            .iter()
+            .map(|behavior| format!("\"{}\"", behavior.as_str()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let honeypot_json = format!(
+            "{{ \"verdict\": \"{}\", \"score\": {}, \"behaviors\": [{}], \"notes\": \"{}\" }}",
+            r.honeypot.verdict.as_str(),
+            r.honeypot.score,
+            behaviors_json,
+            escape_json_str(&r.honeypot.notes)
+        );
         let _ = writeln!(
             out,
-            "    {{ \"port\": {}, \"state\": \"{}\", \"service\": \"{}\", \"risk\": \"{}\", \"category\": \"{}\", \"rtt_ms\": {}, \"banner\": {}, \"advisory\": \"{}\" }}{}",
+            "    {{ \"port\": {}, \"state\": \"{}\", \"service\": \"{}\", \"risk\": \"{}\", \"category\": \"{}\", \"rtt_ms\": {}, \"banner\": {}, \"advisory\": \"{}\", \"honeypot\": {} }}{}",
             r.port,
             r.state.as_str(),
             escape_json_str(&r.service),
@@ -302,6 +415,7 @@ fn render_json_report(
             rtt_json,
             banner_json,
             escape_json_str(&r.advisory),
+            honeypot_json,
             comma
         );
     }
@@ -333,21 +447,20 @@ pub fn sanitize_csv_cell(input: &str) -> String {
 }
 
 fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> String {
-    let mut out =
-        String::from("target,ip,port,state,service,risk,category,rtt_ms,banner,advisory\n");
+    let mut out = String::from(
+        "target,ip,port,state,service,risk,category,rtt_ms,banner,advisory,honeypot_verdict,honeypot_score,honeypot_behaviors\n",
+    );
     for r in results {
-        let rtt = r
-            .rtt_ms()
-            .map(|ms| format!("{ms:.3}"))
-            .unwrap_or_default();
+        let rtt = r.rtt_ms().map(|ms| format!("{ms:.3}")).unwrap_or_default();
         let banner_cell = sanitize_csv_cell(r.banner.as_deref().unwrap_or(""));
         let adv_cell = sanitize_csv_cell(&r.advisory);
         let target_cell = sanitize_csv_cell(&target.raw_input);
         let service_cell = sanitize_csv_cell(&r.service);
         let category_cell = sanitize_csv_cell(r.category);
+        let honeypot_behaviors = sanitize_csv_cell(&r.honeypot.behavior_summary());
         let _ = writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
             target_cell,
             target.primary_ip,
             r.port,
@@ -357,7 +470,10 @@ fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> Stri
             category_cell,
             rtt,
             banner_cell,
-            adv_cell
+            adv_cell,
+            r.honeypot.verdict.as_str(),
+            r.honeypot.score,
+            honeypot_behaviors
         );
     }
     out
@@ -366,7 +482,7 @@ fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mediator::AddressScope;
+    use crate::mediator::{AddressScope, HoneypotAssessment};
 
     fn sample_target() -> TargetInfo {
         TargetInfo {
@@ -391,6 +507,8 @@ mod tests {
             exposure_score: 5,
             posture_grade: 'B',
             firewall_detected: false,
+            possible_honeypot_count: 0,
+            confirmed_honeypot_count: 0,
         }
     }
 
@@ -407,6 +525,7 @@ mod tests {
                 risk: RiskLevel::Low,
                 category: "Remote Access",
                 advisory: "Verify key auth".to_string(),
+                honeypot: HoneypotAssessment::clean(22),
             },
             AuditedPortResult {
                 port: 80,
@@ -417,6 +536,7 @@ mod tests {
                 risk: RiskLevel::None,
                 category: "Closed",
                 advisory: String::new(),
+                honeypot: HoneypotAssessment::clean(80),
             },
         ];
         let summary = sample_summary(1, 1);
@@ -425,7 +545,13 @@ mod tests {
             show_closed: false,
             use_color: false,
         };
-        let text = render_report(&target, &audited, &summary, Duration::from_millis(12), &opts);
+        let text = render_report(
+            &target,
+            &audited,
+            &summary,
+            Duration::from_millis(12),
+            &opts,
+        );
         assert!(text.contains("22"));
         assert!(text.contains("SSH"));
         assert!(!text.contains("80       closed"));
@@ -444,6 +570,7 @@ mod tests {
             risk: RiskLevel::Info,
             category: "TLS Encrypted Service",
             advisory: "Verify TLS".to_string(),
+            honeypot: HoneypotAssessment::clean(443),
         }];
         let summary = sample_summary(1, 0);
         let opts = ReportOptions {

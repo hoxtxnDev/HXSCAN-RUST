@@ -1,6 +1,6 @@
-# Patrón de Diseño Mediator (Mediador / Intermediary / Controller) en `tcpscan` v2.0
+# Patrón de Diseño Mediator (Mediador / Intermediary / Controller) en `tcpscan` v2.1
 
-Este documento detalla la implementación del patrón de comportamiento **Mediator (GoF)** dentro del escáner de puertos TCP de ciberseguridad `tcpscan` (`HXSCAN` Rust Edition), sus **diagramas UML** (Clases, Secuencia, Estados y Topología de Componentes) y la **propuesta de escalabilidad óptima** hacia una plataforma SOC / Pentesting distribuida.
+Este documento detalla la implementación del patrón de comportamiento **Mediator (GoF)** dentro del escáner de puertos TCP de ciberseguridad `tcpscan` (`HXSCAN` Rust Edition), sus **diagramas UML** (Clases, Secuencia, Estados y Topología de Componentes), los **flujos de decisión** introducidos en la versión 2.1 (legitimidad anti-IA y clasificación de honeypots) y la **propuesta de escalabilidad óptima** hacia una plataforma SOC / Pentesting distribuida.
 
 ---
 
@@ -8,20 +8,25 @@ Este documento detalla la implementación del patrón de comportamiento **Mediat
 
 Antes de aplicar el patrón **Mediator**, las etapas de un escáner suelen acoplarse en cadena o en malla (*spaghetti coupling*):
 - El motor de sockets (`Stage 2`) necesitaba conocer detalles del *Banner Grabber* (`Stage 3`).
-- El motor de auditoría (`Stage 4`) importaba estructuras internas de `Stage 1`, `Stage 2` y `Stage 3`.
-- El generador de reportes (`Stage 5`) dependía directamente de todas las etapas previas.
+- El motor de auditoría (`Stage 5`) importaba estructuras internas de `Stage 1`, `Stage 2`, `Stage 3` y `Stage 4`.
+- El generador de reportes (`Stage 6`) dependía directamente de todas las etapas previas.
+- Cualquier nueva capacidad (por ejemplo, detectar honeypots) obligaba a modificar varias etapas a la vez.
 
 Con el patrón **Mediator** ([`src/mediator/`](src/mediator/mod.rs)):
+
 1. **Desacoplamiento Total entre Colegas (`0` imports cruzados)**:
-   Ninguno de los 5 módulos en [`src/stages/`](src/stages/mod.rs) importa a otro módulo hermano. Todos dependen **exclusivamente** del contrato [`crate::mediator::contract`](src/mediator/contract.rs).
+   Ninguno de los **6 módulos** en [`src/stages/`](src/stages/mod.rs) importa a otro módulo hermano. Todos dependen **exclusivamente** del contrato [`crate::mediator::contract`](src/mediator/contract.rs). La infraestructura transversal de cadencia y mutación vive en [`src/stealth.rs`](src/stealth.rs) y es consumida por `Stage 2`, `Stage 3` y el Mediador, sin crear dependencias entre etapas.
 2. **Topología en Estrella alrededor de `ScanController`**:
    Cada etapa actúa como un **Colega (`Colleague`)** que ejecuta su responsabilidad atómica y notifica al mediador mediante `mediator.notify(ComponentId, ScanEvent)`.
 3. **Mediación Reactiva en Tiempo Real (`MediatorDirective`)**:
    El mediador ([`ScanController`](src/mediator/controller.rs)) no es un simple pasamanos pasivo; inspecciona cada evento y toma decisiones tácticas de ciberseguridad:
    - Si `DiscoveryColleague` resuelve una IP pública (`AddressScope::Public`), emite `MediatorDirective::PublicTargetHardeningMode`.
-   - Cuando `ScannerColleague` abre un socket TCP (`SYN-ACK`), invoca `mediator.mediate_open_stream(port, &mut stream)`. El mediador decide si delegar la inspección del socket activo a `FingerprintColleague` sin que `ScannerColleague` sepa siquiera que `FingerprintColleague` existe.
-   - Si `ScannerColleague` detecta puertos en estado `Filtered` (timeout por *packet drop*), el mediador emite `MediatorDirective::FirewallDropDetected`.
-   - Si `AuditColleague` detecta un riesgo crítico (ej. Redis sin contraseña `+PONG` o Telnet expuesto), emite `ScanEvent::CriticalFindingDetected` al instante y el mediador registra la alerta prioritaria (`EscalateCriticalAlert`).
+   - Cuando `ScannerColleague` abre un socket TCP (`SYN-ACK`), invoca `mediator.mediate_open_stream(port, &mut stream)`. El mediador decide si delegar la inspección del socket activo a `FingerprintColleague` y, en modo `stealth`/`mutable`, inyecta la **persona de tráfico** configurada sin que `ScannerColleague` sepa que `FingerprintColleague` existe.
+   - Si `ScannerColleague` detecta puertos `Filtered` y el backoff adaptativo está activo, el mediador emite `MediatorDirective::AdaptivePacingEngaged`; en caso contrario, `FirewallDropDetected`.
+   - `HoneypotColleague` analiza el comportamiento agregado y responde con `PossibleHoneypotDetected` o `ConfirmedHoneypotDetected`, que el Mediador convierte en alertas de decepción (`deception_alerts`).
+   - Si `AuditColleague` detecta un riesgo crítico (p. ej. Redis sin contraseña `+PONG` o Telnet expuesto), emite `ScanEvent::CriticalFindingDetected` al instante y el mediador registra la alerta prioritaria (`EscalateCriticalAlert`).
+4. **Escalabilidad Plug & Play demostrada**:
+   La incorporación de `HoneypotColleague` como **Stage 4** y el desplazamiento de auditoría a **Stage 5** y reportes a **Stage 6** se realizó sin reescribir la lógica interna de los colegas existentes. Solo se extendieron el contrato, el controlador, el CLI y el reporte; exactamente el tipo de evolución que el patrón busca habilitar.
 
 ---
 
@@ -29,7 +34,7 @@ Con el patrón **Mediator** ([`src/mediator/`](src/mediator/mod.rs)):
 
 ### 2.1. Diagrama UML de Clases (`Class Diagram`)
 
-Representa la interfaz `<<interface>> ScanMediator`, el mediador concreto `ScanController`, los contratos de eventos (`ScanEvent`, `MediatorDirective`) y los 5 colegas desacoplados (`DiscoveryColleague`, `ScannerColleague`, `FingerprintColleague`, `AuditColleague`, `ReportColleague`).
+Representa la interfaz `<<interface>> ScanMediator`, el mediador concreto `ScanController`, los contratos de eventos (`ScanEvent`, `MediatorDirective`), la configuración/telemetría stealth y los **6 colegas desacoplados** (`DiscoveryColleague`, `ScannerColleague`, `FingerprintColleague`, `HoneypotColleague`, `AuditColleague`, `ReportColleague`).
 
 ```mermaid
 classDiagram
@@ -46,15 +51,19 @@ classDiagram
         -state: MediatorState
         -event_trace: Vec~MediatedEventRecord~
         -critical_alerts: Vec~String~
+        -deception_alerts: Vec~String~
         -target: Option~TargetInfo~
         -ports: Vec~u16~
         -raw_results: Vec~RawProbeResult~
         -enriched_results: Vec~EnrichedPortResult~
+        -honeypot_assessments: Vec~HoneypotAssessment~
         -audited_results: Vec~AuditedPortResult~
         -summary: Option~SecurityPostureSummary~
+        -stealth_telemetry: Option~StealthTelemetry~
         +new(config: PipelineConfig) ScanController
         +execute() Result~PipelineOutput, DiscoveryError~
         +execute_with_prober(prober: P) Result~PipelineOutput, DiscoveryError~
+        -refresh_stealth_telemetry()
         +state() MediatorState
         +event_trace() Slice~MediatedEventRecord~
     }
@@ -78,21 +87,109 @@ classDiagram
         <<Colleague Stage 3>>
         +run(mediator: &mut ScanController) MediatorDirective
         +inspect_live_stream(port: u16, stream: &mut TcpStream, timeout: Duration) Option~String~
-        +get_service_name(port: u16) str
+        +inspect_live_stream_with_persona(port: u16, stream: &mut TcpStream, timeout: Duration, persona: TrafficPersona, host: &str, seed: u64) Option~String~
         +grab_banner_from_rw(port: u16, stream: &mut S) Option~String~
+        +grab_banner_from_rw_with_persona(port: u16, stream: &mut S, persona: TrafficPersona, host: &str, seed: u64) Option~String~
+        +get_service_name(port: u16) str
+    }
+
+    class HoneypotColleague {
+        <<Colleague Stage 4>>
+        +run(mediator: &mut ScanController) MediatorDirective
+        +analyze_honeypots(enriched: &[EnrichedPortResult], scope: AddressScope) Vec~HoneypotAssessment~
+        +evaluate_honeypot_port(item: &EnrichedPortResult, scope: AddressScope) HoneypotAssessment
     }
 
     class AuditColleague {
-        <<Colleague Stage 4>>
+        <<Colleague Stage 5>>
         +run(mediator: &mut ScanController) MediatorDirective
         +evaluate_port_security(item: EnrichedPortResult, scope: AddressScope) AuditedPortResult
+        +evaluate_port_security_with_honeypot(item: EnrichedPortResult, scope: AddressScope, honeypot: HoneypotAssessment) AuditedPortResult
         +execute_audit_stage(enriched: Vec~EnrichedPortResult~, scope: AddressScope) Tuple
+        +execute_audit_stage_with_honeypots(enriched: Vec~EnrichedPortResult~, scope: AddressScope, honeypots: &[HoneypotAssessment]) Tuple
     }
 
     class ReportColleague {
-        <<Colleague Stage 5>>
+        <<Colleague Stage 6>>
         +run(mediator: &mut ScanController, elapsed: Duration) MediatorDirective
         +render_report(target: &TargetInfo, results: &[AuditedPortResult], summary: &SecurityPostureSummary) String
+        +render_report_with_stealth(target: &TargetInfo, results: &[AuditedPortResult], summary: &SecurityPostureSummary, stealth: &StealthTelemetry) String
+    }
+
+    class StealthConfig {
+        <<configuration>>
+        +mode: StealthMode
+        +persona: TrafficPersona
+        +jitter: Duration
+        +max_pps: f64
+        +burst_size: usize
+        +burst_pause: Duration
+        +adaptive_backoff: bool
+        +decoy_probes: usize
+        +ai_filter: bool
+    }
+
+    class PacingController {
+        <<stealth module>>
+        -base_interval: Duration
+        -jitter: Duration
+        -burst_size: usize
+        -burst_pause: Duration
+        -backoff: u32
+        +new(config: &ScannerConfig, worker_count: usize, seed: u64) PacingController
+        +on_probe_complete(state: &PortState) Duration
+    }
+
+    class StealthTelemetry {
+        <<telemetry>>
+        +mode: StealthMode
+        +persona: TrafficPersona
+        +ai_filter: bool
+        +max_pps: f64
+        +jitter_ms: u64
+        +burst_size: usize
+        +burst_pause_ms: u64
+        +decoy_probes: usize
+        +adaptive_backoff: bool
+        +filtered_ratio_pct: u8
+        +legitimacy_score: u8
+        +legitimacy_grade: char
+    }
+
+    class HoneypotAssessment {
+        <<assessment>>
+        +port: u16
+        +verdict: HoneypotVerdict
+        +score: u8
+        +behaviors: Vec~HoneypotBehavior~
+        +notes: String
+        +clean(port: u16) HoneypotAssessment
+        +is_suspicious() bool
+        +behavior_summary() String
+    }
+
+    class HoneypotVerdict {
+        <<enumeration>>
+        Clean
+        PossibleHoneypot
+        Honeypot
+    }
+
+    class HoneypotBehavior {
+        <<enumeration>>
+        KnownHoneypotSignature
+        HoneypotPort
+        ServicePortMismatch
+        ContradictoryBanner
+        TarpitLatency
+        MassOpenServices
+        UniformRtt
+        ClonedBanners
+        DefaultCredentialPrompt
+        FakeVersionDisclosure
+        BannerlessInteractiveService
+        UnusualEphemeralService
+        HoneypotPortCluster
     }
 
     class ScanEvent {
@@ -100,6 +197,7 @@ classDiagram
         TargetDiscovered
         ProbingCompleted
         FingerprintingCompleted
+        HoneypotAssessmentCompleted
         CriticalFindingDetected
         AuditCompleted
         ReportRendered
@@ -110,24 +208,40 @@ classDiagram
         Proceed
         PublicTargetHardeningMode
         FirewallDropDetected
+        AdaptivePacingEngaged
+        PossibleHoneypotDetected
+        ConfirmedHoneypotDetected
         EscalateCriticalAlert
     }
 
     ScanMediator <|.. ScanController : implements
     ScanController ..> ScanEvent : processes
     ScanController ..> MediatorDirective : issues
+    ScanController *-- StealthConfig : configures
+    ScanController o-- HoneypotAssessment : aggregates
+    ScanController ..> StealthTelemetry : renders
+
     DiscoveryColleague --> ScanMediator : notifies TargetDiscovered
     ScannerColleague --> ScanMediator : notifies ProbingCompleted & mediate_open_stream()
     FingerprintColleague --> ScanMediator : notifies FingerprintingCompleted
+    HoneypotColleague --> ScanMediator : notifies HoneypotAssessmentCompleted
     AuditColleague --> ScanMediator : notifies CriticalFindingDetected & AuditCompleted
     ReportColleague --> ScanMediator : notifies ReportRendered
+
+    ScannerColleague ..> PacingController : uses per worker
+    PacingController ..> StealthConfig : reads
+    FingerprintColleague ..> StealthConfig : reads persona
+    HoneypotColleague ..> HoneypotAssessment : produces
+    HoneypotAssessment --> HoneypotVerdict
+    HoneypotAssessment --> HoneypotBehavior
+    ReportColleague ..> StealthTelemetry : renders
 ```
 
 ---
 
 ### 2.2. Diagrama UML de Secuencia (`Sequence Diagram`)
 
-Muestra el flujo completo de mediación cuando el analista ejecuta `./tcpscan 8.8.8.8 22,80,6379,9999`:
+Muestra el flujo completo de mediación cuando el analista ejecuta `./tcpscan 8.8.8.8 22,80,6379,9999 --mutable`:
 
 ```mermaid
 sequenceDiagram
@@ -137,8 +251,9 @@ sequenceDiagram
     participant S1 as DiscoveryColleague (Stage 1)
     participant S2 as ScannerColleague (Stage 2)
     participant S3 as FingerprintColleague (Stage 3)
-    participant S4 as AuditColleague (Stage 4)
-    participant S5 as ReportColleague (Stage 5)
+    participant S4 as HoneypotColleague (Stage 4)
+    participant S5 as AuditColleague (Stage 5)
+    participant S6 as ReportColleague (Stage 6)
 
     Analyst->>Ctrl: ScanController::new(PipelineConfig) + execute()
     activate Ctrl
@@ -150,20 +265,27 @@ sequenceDiagram
     Ctrl-->>S1: MediatorDirective::PublicTargetHardeningMode
     deactivate S1
 
-    Note over Ctrl,S3: Fase 2: Sondeo TCP Lock-Free + Mediación de Socket en Caliente
+    Note over Ctrl,S3: Fase 2: Sondeo TCP Lock-Free + PacingController + Persona
     Ctrl->>S2: ScannerColleague::run_live(&mut mediator)
     activate S2
     loop Workers concurrentes (AtomicUsize lock-free)
+        S2->>S2: PacingController::on_probe_complete() -> jitter / burst / backoff
         S2->>S2: TcpStream::connect_timeout(port)
         alt Puerto Abierto (SYN-ACK recibido)
             S2->>Ctrl: mediate_open_stream(port, &mut stream)
-            Ctrl->>S3: FingerprintColleague::inspect_live_stream(port, &mut stream)
-            S3-->>Ctrl: Option<SanitizedBanner> (ej. "+PONG" o "SSH-2.0-OpenSSH")
-            Ctrl-->>S2: Option<SanitizedBanner>
+            Ctrl->>S3: inspect_live_stream_with_persona(port, stream, persona, host, seed)
+            S3-->>Ctrl: Option~SanitizedBanner~ (headers HTTP mutados)
+            Ctrl-->>S2: Option~SanitizedBanner~
         end
     end
     S2->>Ctrl: notify(ScannerColleague, ProbingCompleted { raw_results })
-    Ctrl-->>S2: MediatorDirective::FirewallDropDetected { filtered_ports: 1 }
+    alt Backoff adaptativo activo y filtered_ratio >= 25%
+        Ctrl-->>S2: MediatorDirective::AdaptivePacingEngaged { filtered_rate_pct }
+    else Firewall detectado sin modo stealth
+        Ctrl-->>S2: MediatorDirective::FirewallDropDetected { filtered_ports }
+    else Sin filtrado
+        Ctrl-->>S2: MediatorDirective::Proceed
+    end
     deactivate S2
 
     Note over Ctrl,S3: Fase 3: Enriquecimiento de Servicios e Inferencia por Banner
@@ -173,25 +295,41 @@ sequenceDiagram
     Ctrl-->>S3: MediatorDirective::Proceed
     deactivate S3
 
-    Note over Ctrl,S4: Fase 4: Auditoría de Ciberseguridad y Alertas Críticas
-    Ctrl->>S4: AuditColleague::run(&mut mediator)
+    Note over Ctrl,S4: Fase 4: Clasificación Conductual de Honeypots
+    Ctrl->>S4: HoneypotColleague::run(&mut mediator)
     activate S4
-    opt Si se detecta puerto/banner CRITICAL (ej. Redis +PONG o Telnet)
-        S4->>Ctrl: notify(AuditColleague, CriticalFindingDetected { port: 6379 })
-        Ctrl-->>S4: MediatorDirective::EscalateCriticalAlert
+    S4->>S4: analyze_honeypots(enriched, scope) + contexto agregado
+    S4->>Ctrl: notify(HoneypotColleague, HoneypotAssessmentCompleted { assessments })
+    alt Veredicto Honeypot
+        Ctrl-->>S4: MediatorDirective::ConfirmedHoneypotDetected { count }
+        Note over Ctrl: deception_alerts.push("HONEYPOT CONFIRMED...")
+    else Veredicto PossibleHoneypot
+        Ctrl-->>S4: MediatorDirective::PossibleHoneypotDetected { count }
+    else Todo Clean
+        Ctrl-->>S4: MediatorDirective::Proceed
     end
-    S4->>Ctrl: notify(AuditColleague, AuditCompleted { audited_results, summary })
-    Ctrl-->>S4: MediatorDirective::Proceed
     deactivate S4
 
-    Note over Ctrl,S5: Fase 5: Generación de Reporte (ANSI / JSON / CSV)
-    Ctrl->>S5: ReportColleague::run(&mut mediator, elapsed)
+    Note over Ctrl,S5: Fase 5: Auditoría de Ciberseguridad + Postura
+    Ctrl->>S5: AuditColleague::run(&mut mediator)
     activate S5
-    S5->>Ctrl: notify(ReportColleague, ReportRendered { formatted_report })
+    opt Si se detecta puerto/banner CRITICAL (ej. Redis +PONG o Telnet)
+        S5->>Ctrl: notify(AuditColleague, CriticalFindingDetected { port: 6379 })
+        Ctrl-->>S5: MediatorDirective::EscalateCriticalAlert
+    end
+    S5->>Ctrl: notify(AuditColleague, AuditCompleted { audited_results, summary })
     Ctrl-->>S5: MediatorDirective::Proceed
     deactivate S5
 
-    Ctrl-->>Analyst: PipelineOutput (exit_code, formatted_report, event_trace, critical_alerts)
+    Note over Ctrl,S6: Fase 6: Telemetría de Legitimidad + Reporte (ANSI / JSON / CSV)
+    Ctrl->>Ctrl: refresh_stealth_telemetry() -> StealthTelemetry
+    Ctrl->>S6: ReportColleague::run(&mut mediator, elapsed)
+    activate S6
+    S6->>Ctrl: notify(ReportColleague, ReportRendered { formatted_report })
+    Ctrl-->>S6: MediatorDirective::Proceed
+    deactivate S6
+
+    Ctrl-->>Analyst: PipelineOutput (report, event_trace, critical_alerts, deception_alerts, honeypot_assessments, stealth_telemetry)
     deactivate Ctrl
 ```
 
@@ -208,8 +346,9 @@ stateDiagram-v2
     Discovering --> Failed : Error DNS / Rango de puertos inválido
     Discovering --> Probing : ScanEvent::TargetDiscovered
     Probing --> Fingerprinting : ScanEvent::ProbingCompleted
-    Fingerprinting --> Auditing : ScanEvent::FingerprintingCompleted
-    Auditing --> Auditing : ScanEvent::CriticalFindingDetected (Acumula alerta)
+    Fingerprinting --> HoneypotAnalysis : ScanEvent::FingerprintingCompleted
+    HoneypotAnalysis --> Auditing : ScanEvent::HoneypotAssessmentCompleted (guarda veredictos)
+    Auditing --> Auditing : ScanEvent::CriticalFindingDetected (acumula alerta)
     Auditing --> Reporting : ScanEvent::AuditCompleted
     Reporting --> Completed : ScanEvent::ReportRendered
     Failed --> [*] : Exit Code 1
@@ -220,27 +359,32 @@ stateDiagram-v2
 
 ### 2.4. Diagrama de Topología Desacoplada vs. Escalabilidad Futura (`Component Flowchart`)
 
-Gracias al patrón **Mediator**, conectar nuevos módulos de ciberseguridad no requiere tocar ni una sola línea de los colegas existentes:
+Gracias al patrón **Mediator**, conectar nuevos módulos de ciberseguridad no requiere tocar ni una sola línea de los colegas existentes. La v2.1 lo demuestra insertando `HoneypotColleague` entre `FingerprintColleague` y `AuditColleague`:
 
 ```mermaid
 flowchart TB
-    subgraph Current["Colleagues Actuales (0 dependencias cruzadas)"]
+    subgraph Current["Colleagues Actuales (0 dependencias cruzadas entre etapas)"]
         C0["Stage 0: CliColleague"]
         C1["Stage 1: DiscoveryColleague (DNS + PortBitmap)"]
-        C2["Stage 2: ScannerColleague (Lock-Free TCP)"]
-        C3["Stage 3: FingerprintColleague (Service + Banner)"]
-        C4["Stage 4: AuditColleague (Risk & Posture)"]
-        C5["Stage 5: ReportColleague (ANSI / JSON / CSV)"]
+        C2["Stage 2: ScannerColleague (Lock-Free TCP + PacingController)"]
+        C3["Stage 3: FingerprintColleague (Service + Banner + Persona)"]
+        C4["Stage 4: HoneypotColleague (Behavioral Deception Analysis)"]
+        C5["Stage 5: AuditColleague (Risk & Posture + Honeypot Counts)"]
+        C6["Stage 6: ReportColleague (ANSI / JSON / CSV + Stealth Telemetry)"]
+    end
+
+    subgraph Shared["Infraestructura Compartida (sin acoplar etapas)"]
+        ST["stealth.rs: PacingController, build_work_plan, build_http_probe, assess_legitimacy"]
     end
 
     M{{"ScanController (Mediator / Intermediary)"}}
 
     subgraph Future["Nuevos Colleagues Conectables (Escalabilidad Plug & Play)"]
-        F1["AdaptivePacingColleague (Auto-Throttling ante WAF/IDS)"]
-        F2["AsyncReactorColleague (kqueue/epoll / Raw SYN 50k pps)"]
-        F3["TlsCertColleague (Inspección X.509, SANs y TLS 1.3)"]
-        F4["VulnIntelColleague (Correlación CPE -> CVE / CVSS / NVD)"]
-        F5["SiemWebhookColleague (Alertas Wazuh / Splunk / Slack en vivo)"]
+        F1["AsyncReactorColleague (kqueue/epoll/io_uring)"]
+        F2["TlsCertColleague (Inspección X.509, SANs y TLS 1.3)"]
+        F3["VulnIntelColleague (Correlación CPE -> CVE / CVSS / NVD)"]
+        F4["HoneypotIntelColleague (Federación de firmas y TTPs)"]
+        F5["SiemWebhookColleague (Alertas Wazuh / Splunk / Slack)"]
         F6["DistributedAgentMediator (Escaneo distribuido vía gRPC/NATS)"]
     end
 
@@ -250,6 +394,11 @@ flowchart TB
     C3 <--> M
     C4 <--> M
     C5 <--> M
+    C6 <--> M
+
+    ST -.-> C2
+    ST -.-> C3
+    ST -.-> M
 
     M -.-> F1
     M -.-> F2
@@ -259,11 +408,82 @@ flowchart TB
     M -.-> F6
 ```
 
+> `AdaptivePacingColleague` ya no aparece como trabajo futuro: su lógica se integró en `Stage 2` mediante `PacingController` y la directiva `AdaptivePacingEngaged`.
+
+---
+
+### 2.5. Flujo del Sobre de Legitimidad Anti-IA (`Legitimacy Funnel`)
+
+Este flujo muestra cómo el CLI transforma la configuración del analista en una cadencia y una identidad de tráfico, y cómo se calcula la telemetría de legitimidad que se adjunta al reporte:
+
+```mermaid
+flowchart TD
+    A["CLI: --stealth / --mutable / --ai-filter / --persona"] --> B["StealthConfig"]
+    B --> C["PacingController por worker"]
+    C --> C1["Techo global max_pps repartido entre workers"]
+    C --> C2["Jitter uniforme por sonda"]
+    C --> C3["Ráfagas + pausa configurables"]
+    C --> C4["Backoff 2x..8x si Filtered/Error"]
+    B --> D["TrafficPersona"]
+    D --> D1["build_http_probe(): User-Agent, Accept, Accept-Language, Host mutados"]
+    C --> E["Sondas TCP (mismo objetivo autorizado)"]
+    D1 --> E
+    E --> F["Resultados + filtered_ratio_pct"]
+    F --> G["assess_legitimacy()"]
+    G --> H["StealthTelemetry: score 0-100 / grado A-F"]
+    H --> I["Reporte humano / JSON / CSV"]
+```
+
+**Límite explícito**: este sobre reduce firmas evidentes y mantiene la cadencia dentro de envelopes de tráfico empresarial. No demuestra ni garantiza evasión de sistemas AI/ML, IDS/IPS o EDR. El score es una **autoevaluación honesta**, no una certificación de invisibilidad.
+
+---
+
+### 2.6. Flujo de Clasificación Conductual de Honeypots (`Deception Decision Flow`)
+
+```mermaid
+flowchart TD
+    A["EnrichedPortResult (Stage 3)"] --> B["Contexto agregado del escaneo"]
+    B --> B1["Mass-open: 10+ abiertos y 35%+ del total"]
+    B --> B2["RTT uniforme: 6+ abiertos con dispersión de 200 us o menos"]
+    B --> B3["Banners clonados: 3+ idénticos"]
+    B --> B4["Clúster: 3+ puertos típicos de honeypot"]
+
+    A --> C["Señales por puerto"]
+    C --> C1["Firma conocida (Cowrie, Kippo, Dionaea, Thinkst...)"]
+    C --> C2["Puerto típico de honeypot"]
+    C --> C3["Mismatch protocolo-servicio"]
+    C --> C4["Banner con protocolos contradictorios"]
+    C --> C5["Tarpit / latencia anómala"]
+    C --> C6["Prompt de credenciales / versión legacy / puerto efímero"]
+
+    B1 --> D["Score 0-100 (pesos por comportamiento)"]
+    B2 --> D
+    B3 --> D
+    B4 --> D
+    C1 --> D
+    C2 --> D
+    C3 --> D
+    C4 --> D
+    C5 --> D
+    C6 --> D
+
+    D --> E{"Veredicto por umbral"}
+    E -->|"score menor que 30"| F["clean"]
+    E -->|"score entre 30 y 69"| G["possible-honeypot"]
+    E -->|"score 70 o mayor"| H["honeypot"]
+
+    G --> I["MediatorDirective::PossibleHoneypotDetected"]
+    H --> J["MediatorDirective::ConfirmedHoneypotDetected"]
+    I --> K["deception_alerts + Stage 5 + Stage 6"]
+    J --> K
+    F --> K
+```
+
 ---
 
 ## 3. Propuesta de Escalabilidad Óptima: ¿Cómo Funcionaría a Gran Escala?
 
-El patrón **Mediator** convierte a `tcpscan` en una arquitectura *Event-Driven* lista para escalar en **4 dimensiones clave** sin reescribir la lógica existente:
+El patrón **Mediator** convierte a `tcpscan` en una arquitectura *Event-Driven* lista para escalar en **6 dimensiones clave** sin reescribir la lógica existente:
 
 ### 3.1. Escalabilidad de Rendimiento de Red: `AsyncReactorColleague` (`kqueue` / `epoll` / `io_uring`)
 - **Problema al escalar a redes `/16` (65,535 IPs $\times$ 1,000 puertos)**: Crear hilos de sistema operativo tiene un límite físico de descriptores de archivo (`ulimit -n`) y memoria de stack por hilo.
@@ -272,18 +492,47 @@ El patrón **Mediator** convierte a `tcpscan` en una arquitectura *Event-Driven*
   - Utiliza sockets no bloqueantes (`O_NONBLOCK`) registrados en `kqueue` (macOS/BSD) o `epoll`/`io_uring` (Linux) con una máquina de estados en un solo hilo por núcleo CPU, manteniendo hasta **10,000 conexiones TCP `SYN_SENT` en vuelo simultáneamente con < 2 MB de RAM**.
   - El `ScanController` selecciona automáticamente `ScannerColleague` (hilos nativos) cuando el lote es $< 2,000$ sondas y conmuta a `AsyncReactorColleague` cuando el lote supera $2,000$ sondas.
 
-### 3.2. Escalabilidad Táctica Anti-IDS/Firewall: `AdaptivePacingColleague` (Control de Congestión y Evasión)
-- **Cómo funcionaría**:
-  - Cuando `ScannerColleague` reporta eventos de puertos filtrados (`PortState::Filtered`) o aumentos bruscos en el `rtt_micros`, el Mediador invoca a `AdaptivePacingColleague`.
-  - Este colega aplica un algoritmo tipo **AIMD (Additive Increase / Multiplicative Decrease)** similar a TCP Vegas/BBR: si la tasa de *timeouts* supera el 25%, el Mediador inyecta dinámicamente un *jitter* aleatorio (`15ms–80ms`) y reduce los hilos activos para evitar que el firewall perimetral o Fail2ban bloquee la IP del auditor.
+### 3.2. Escalabilidad Táctica Anti-IDS/Firewall: `PacingController` + `AdaptivePacingEngaged`
+- **Estado actual (v2.1)**: el control de congestión ya está integrado en `Stage 2`. Cada worker mantiene su propio `PacingController` con jitter, techo `max_pps` distribuido, ráfagas y backoff exponencial (hasta `8x`) ante `Filtered`/`Error`. El Mediador observa el `filtered_ratio` y emite `AdaptivePacingEngaged` cuando supera el 25% en modo stealth/mutable.
+- **Evolución futura**:
+  - Añadir un colega `AdaptivePacingColleague` que reciba telemetría agregada de varios escaneos y aplique un algoritmo tipo **AIMD (Additive Increase / Multiplicative Decrease)** similar a TCP Vegas/BBR.
+  - Si la tasa de *timeouts* se mantiene alta, el Mediador podría reducir dinámicamente los hilos activos y ampliar el jitter para evitar que el firewall perimetral o Fail2ban bloqueen la IP del auditor.
+  - La ventaja del patrón es que esa lógica puede añadirse como un colega nuevo, sin modificar `ScannerColleague`.
 
 ### 3.3. Escalabilidad de Inteligencia de Amenazas: `VulnIntelColleague` + `TlsCertColleague`
 - **Cómo funcionaría**:
-  - **Inspección TLS (`TlsCertColleague`)**: Cuando `ScannerColleague` detecta abiertos los puertos `443`, `8443`, `6443`, `993` o `2376`, el Mediador enruta el stream hacia `TlsCertColleague` para extraer el certificado X.509 (`Subject`, `SANs` para descubrir subdominios ocultos, fecha de expiración y cifrados débiles).
-  - **Correlación CVE (`VulnIntelColleague`)**: Se suscribe en el Mediador al evento `ScanEvent::FingerprintingCompleted`. Transforma banners como `OpenSSH_9.7p1` o `nginx/1.26.0` en identificadores **CPE 2.3** (`cpe:2.3:a:openbsd:openssh:9.7p1:*:*:*:*:*:*:*`) y consulta una base local indexada (SQLite/FST) de NVD/CISA KEV para adjuntar la lista exacta de **CVEs explotables** antes de que `AuditColleague` calcule el puntaje de riesgo.
+  - **Inspección TLS (`TlsCertColleague`)**: cuando `ScannerColleague` detecta abiertos los puertos `443`, `8443`, `6443`, `993` o `2376`, el Mediador enruta el stream hacia `TlsCertColleague` para extraer el certificado X.509 (`Subject`, `SANs` para descubrir subdominios ocultos, fecha de expiración y cifrados débiles).
+  - **Correlación CVE (`VulnIntelColleague`)**: se suscribe en el Mediador al evento `ScanEvent::FingerprintingCompleted`. Transforma banners como `OpenSSH_9.7p1` o `nginx/1.26.0` en identificadores **CPE 2.3** (`cpe:2.3:a:openbsd:openssh:9.7p1:*:*:*:*:*:*:*`) y consulta una base local indexada (SQLite/FST) de NVD/CISA KEV para adjuntar la lista exacta de **CVEs explotables** antes de que `AuditColleague` calcule el puntaje de riesgo.
 
-### 3.4. Escalabilidad Distribuida (SOC / Red Team Cluster): `DistributedClusterMediator`
+### 3.4. Escalabilidad de Detección de Engaño: `HoneypotIntelColleague`
+- **Problema**: las firmas locales de `HoneypotColleague` cubren frameworks conocidos, pero una red corporativa grande puede desplegar honeypots personalizados o de nueva generación.
+- **Cómo funcionaría con el Mediador**:
+  - Un nuevo colega `HoneypotIntelColleague` se suscribe a `ScanEvent::HoneypotAssessmentCompleted` y enriquece los veredictos con inteligencia externa (TTPs, ASN, rangos de laboratorios de investigación, huellas de decepción).
+  - Podría mantener un **repositorio federado de firmas** (por ejemplo, actualizado por un SOC central) y emitir directivas adicionales al Mediador, sin tocar `HoneypotColleague`.
+  - La separación entre **detección local** (Stage 4) y **correlación global** (nuevo colega) evita acoplar la lógica de firmas a la de inteligencia.
+
+### 3.5. Escalabilidad de Observabilidad: `SiemWebhookColleague`
 - **Cómo funcionaría**:
-  - En lugar de instanciar `ScanController` en memoria local, se implementa el mismo trait [`ScanMediator`](src/mediator/contract.rs#L359-L368) sobre un transporte de red (`DistributedClusterMediator` usando gRPC, WebSockets o NATS).
+  - Se conecta al Mediador como observador de `CriticalFindingDetected`, `ConfirmedHoneypotDetected` y `AdaptivePacingEngaged`.
+  - Envía alertas en vivo a Wazuh, Splunk, Elastic Security o Slack mediante webhooks firmados (HMAC) y reintentos con backoff.
+  - El reporte JSON ya expone los bloques `stealth`, `honeypot` y `summary`, por lo que el colega solo necesita transformar el evento, no reinterpretar el escaneo.
+
+### 3.6. Escalabilidad Distribuida (SOC / Red Team Cluster): `DistributedClusterMediator`
+- **Cómo funcionaría**:
+  - En lugar de instanciar `ScanController` en memoria local, se implementa el mismo trait [`ScanMediator`](src/mediator/contract.rs) sobre un transporte de red (`DistributedClusterMediator` usando gRPC, WebSockets o NATS).
   - Un nodo central (**Controller**) particiona un segmento corporativo (`10.0.0.0/8`) en sub-tareas y las reparte entre múltiples agentes ligeros (`ScannerColleague` desplegados en distintas VLANs o contenedores).
-  - Cada agente remoto envía sus `ScanEvent` al Mediador central, el cual consolida todo en un único reporte global para el SIEM (`Splunk`, `Elastic Security`, `Wazuh`) y dispara alertas en tiempo real al recibir `ScanEvent::CriticalFindingDetected`.
+  - Cada agente remoto envía sus `ScanEvent` al Mediador central, el cual consolida todo en un único reporte global para el SIEM (`Splunk`, `Elastic Security`, `Wazuh`) y dispara alertas en tiempo real al recibir `ScanEvent::CriticalFindingDetected` o `ConfirmedHoneypotDetected`.
+  - La telemetría de legitimidad y los veredictos de honeypot viajan como parte del contrato, de modo que el nodo central puede comparar el comportamiento de distintos segmentos sin acoplar los agentes entre sí.
+
+---
+
+## 4. Resumen de Garantías Arquitectónicas
+
+| Garantía | Verificación |
+|----------|--------------|
+| **0 imports cruzados entre etapas** | `stage1..stage6` solo importan `crate::mediator::contract` (y `stealth` como infraestructura compartida en Stage 2/3). |
+| **Comunicación exclusiva vía Mediador** | Cada colega llama `mediator.notify(...)` o usa `mediate_open_stream(...)`; ninguno invoca a otro colega. |
+| **Estado centralizado (blackboard)** | `ScanController` mantiene `target`, `ports`, `raw_results`, `enriched_results`, `honeypot_assessments`, `audited_results`, `summary` y `stealth_telemetry`. |
+| **Trazabilidad auditable** | `event_trace` registra emisor, nombre de evento, estado resultante y directiva emitida. |
+| **Escalabilidad plug-and-play** | `HoneypotColleague` se añadió como Stage 4 sin modificar la lógica interna de los colegas existentes; auditoría y reporte se renumeraron a Stage 5 y Stage 6. |
+| **Seguridad de memoria** | `#![forbid(unsafe_code)]` en todos los targets; sin dependencias externas. |

@@ -13,12 +13,13 @@ use std::io::{self, ErrorKind};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::mediator::{
     ComponentId, MediatorDirective, PortState, RawProbeResult, ScanController, ScanEvent,
     ScanMediator, ScannerConfig,
 };
+use crate::stealth::{build_work_plan, PacingController};
 
 /// **Colleague 2 (`ScannerColleague`)**: Lock-free concurrent TCP Probing Colleague.
 pub struct ScannerColleague;
@@ -164,16 +165,26 @@ where
     let cursor = AtomicUsize::new(0);
     let per_worker_cap = (ports.len() / worker_count) + 2;
 
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0xA5A5_5A5A_F0F0_0F0F);
+    // Decoys are interleaved against the same primary target and discarded afterwards.
+    let work_plan = build_work_plan(ports, config.stealth.decoy_probes, seed);
+
     let mut all_results: Vec<RawProbeResult> = Vec::with_capacity(ports.len());
 
     thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
         let prober_ref = &prober;
+        let plan_ref = &work_plan;
 
-        for _ in 0..worker_count {
+        for worker_idx in 0..worker_count {
             let cursor_ref = &cursor;
+            let worker_seed = seed ^ (worker_idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
             let handle = scope.spawn(move || {
                 let mut local_results = Vec::with_capacity(per_worker_cap);
+                let mut pacer = PacingController::new(config, worker_count, worker_seed);
 
                 loop {
                     if let Some(cancel) = cancel_flag {
@@ -183,16 +194,21 @@ where
                     }
 
                     let idx = cursor_ref.fetch_add(1, Ordering::Relaxed);
-                    if idx >= ports.len() {
+                    if idx >= plan_ref.len() {
                         break;
                     }
 
-                    let port = ports[idx];
+                    let (port, is_decoy) = plan_ref[idx];
                     let res = prober_ref(port);
-                    local_results.push(res);
+                    let next_delay = pacer.on_probe_complete(&res.state);
 
-                    if !config.delay.is_zero() {
-                        thread::sleep(config.delay);
+                    // Decoy results never reach the Mediator or the audit.
+                    if !is_decoy {
+                        local_results.push(res);
+                    }
+
+                    if !next_delay.is_zero() {
+                        thread::sleep(next_delay);
                     }
                 }
 
@@ -254,7 +270,10 @@ mod tests {
         let perm = io::Error::new(ErrorKind::PermissionDenied, "Operation not permitted");
         assert_eq!(
             classify_connect_error(&perm),
-            (PortState::Error("Operation not permitted".to_string()), false)
+            (
+                PortState::Error("Operation not permitted".to_string()),
+                false
+            )
         );
     }
 
@@ -266,6 +285,7 @@ mod tests {
             timeout: Duration::from_millis(50),
             retries: 0,
             delay: Duration::ZERO,
+            stealth: crate::mediator::StealthConfig::default(),
         };
 
         let results = execute_scan_stage_with_prober(&ports, &config, None, |port| {
@@ -322,6 +342,7 @@ mod tests {
             timeout: Duration::from_millis(150),
             retries: 0,
             delay: Duration::ZERO,
+            stealth: crate::mediator::StealthConfig::default(),
         };
 
         let ports = vec![open_port];
