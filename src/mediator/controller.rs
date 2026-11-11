@@ -299,11 +299,10 @@ impl ScanMediator for ScanController {
                 self.state = MediatorState::Fingerprinting;
 
                 if filtered_ports > 0 {
-                    let filtered_rate_pct = if total_ports == 0 {
-                        0
-                    } else {
-                        ((filtered_ports.saturating_mul(100)) / total_ports).min(100) as u8
-                    };
+                    let filtered_rate_pct = (filtered_ports.saturating_mul(100))
+                        .checked_div(total_ports)
+                        .unwrap_or(0)
+                        .min(100) as u8;
                     let stealth_active = self.config.scanner.stealth.mode != StealthMode::Normal
                         && self.config.scanner.stealth.adaptive_backoff;
                     if stealth_active && filtered_rate_pct >= 25 {

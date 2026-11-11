@@ -196,7 +196,7 @@ fn strip_ansi_sequences(input: &str) -> String {
                 Some('[') => {
                     // CSI sequence: consume '[' and parameters until final byte (0x40..=0x7E)
                     let _ = chars.next();
-                    while let Some(c) = chars.next() {
+                    for c in chars.by_ref() {
                         if ('@'..='~').contains(&c) {
                             break;
                         }
@@ -355,7 +355,7 @@ pub fn extract_service_version(service: &str, banner: Option<&str>) -> Option<St
             if let Some(position) = find_ignore_ascii_case(greeting, marker) {
                 let product = greeting[position..]
                     .trim()
-                    .trim_end_matches(|ch| ch == ')' || ch == ']');
+                    .trim_end_matches(&[')', ']'][..]);
                 if !product.is_empty() {
                     return Some(truncate_version(product));
                 }

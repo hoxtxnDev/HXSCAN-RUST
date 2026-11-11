@@ -226,8 +226,8 @@ fn render_human_report(
     } else {
         let _ = writeln!(
             out,
-            "\n{:<8} {:<10} {:<10} {:<16} {:<18} {:<8} {:<10} {}",
-            "Port", "State", "RTT", "Service", "Version", "Risk", "Honeypot", "Banner / Details"
+            "\n{:<8} {:<10} {:<10} {:<16} {:<18} {:<8} {:<10} Banner / Details",
+            "Port", "State", "RTT", "Service", "Version", "Risk", "Honeypot"
         );
         let _ = writeln!(out, "{subsep}");
 

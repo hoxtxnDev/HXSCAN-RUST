@@ -61,6 +61,7 @@ pub enum ScanProfile {
 }
 
 impl ScanProfile {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(name: &str) -> Result<Self, String> {
         match name.trim().to_ascii_lowercase().as_str() {
             "default" | "normal" | "standard" => Ok(Self::Default),
@@ -95,6 +96,7 @@ pub fn parse_traffic_persona(name: &str) -> Result<TrafficPersona, String> {
 }
 
 /// Outcome of parsing CLI arguments.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum CliAction {
     Run(PipelineConfig),

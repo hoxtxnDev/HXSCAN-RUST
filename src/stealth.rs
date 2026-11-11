@@ -351,11 +351,10 @@ pub fn assess_legitimacy(
 
 /// Compute the filtered ratio used by the adaptive-pacing directive and telemetry.
 pub fn filtered_ratio_pct(summary: &SecurityPostureSummary) -> u8 {
-    if summary.total_scanned == 0 {
-        0
-    } else {
-        ((summary.filtered_count.saturating_mul(100)) / summary.total_scanned).min(100) as u8
-    }
+    (summary.filtered_count.saturating_mul(100))
+        .checked_div(summary.total_scanned)
+        .unwrap_or(0)
+        .min(100) as u8
 }
 
 /// Convenience helper used by the Mediator before invoking the reporting stage.

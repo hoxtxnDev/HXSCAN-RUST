@@ -277,13 +277,18 @@ pub fn build_cpe23(
 fn extract_version_after(haystack_lower: &str, token: &str) -> Option<String> {
     let idx = haystack_lower.find(token)?;
     let rest = &haystack_lower[idx + token.len()..];
-    let trimmed = rest.trim_start_matches([' ', '/', '_', '-', ':']);
+    let trimmed = rest.trim_start_matches(&[' ', '/', '_', '-', ':'][..]);
     let ver: String = trimmed
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
         .collect();
-    let ver = ver.trim_matches(['.', '-']);
-    if ver.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+    let ver = ver.trim_matches(&['.', '-'][..]);
+    if ver
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
         Some(ver.to_string())
     } else {
         None
@@ -342,7 +347,11 @@ pub fn correlate_cves(
         out.push("CVE-2019-10149".to_string());
     }
 
-    if banner.is_some_and(|b| b.to_ascii_uppercase().starts_with("+PONG")) || port == 2375 {
+    if banner
+        .map(|b| b.to_ascii_uppercase().starts_with("+PONG"))
+        .unwrap_or(false)
+        || port == 2375
+    {
         out.push("CWE-306".to_string());
     }
 
@@ -356,11 +365,13 @@ fn is_openssh_regresshion_vulnerable(ver: &str) -> bool {
         .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
     let mut parts = numeric.split('.');
-    let Some(major) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
-        return false;
+    let major = match parts.next().and_then(|s| s.parse::<u32>().ok()) {
+        Some(v) => v,
+        None => return false,
     };
-    let Some(minor) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
-        return false;
+    let minor = match parts.next().and_then(|s| s.parse::<u32>().ok()) {
+        Some(v) => v,
+        None => return false,
     };
     (major == 8 && (5..=9).contains(&minor)) || (major == 9 && minor <= 6)
 }
