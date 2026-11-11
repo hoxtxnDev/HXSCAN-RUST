@@ -333,14 +333,58 @@ impl RawProbeResult {
     }
 }
 
+/// X.509 certificate metadata extracted by `FingerprintColleague` (Stage 3) during a
+/// TLS 1.2 `ClientHello` exchange. No cryptographic verification is performed: the
+/// handshake stops after the server certificate, so this is **reconnaissance metadata**.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsCertificateInfo {
+    /// Subject Common Name (`CN`) from the leaf certificate.
+    pub subject_cn: Option<String>,
+    /// Issuer Common Name (`CN`).
+    pub issuer_cn: Option<String>,
+    /// DNS Subject Alternative Names (`SAN`), deduplicated and capped.
+    pub sans: Vec<String>,
+    /// Raw `notAfter` value as encoded in the certificate.
+    pub not_after: Option<String>,
+    /// Days remaining until `notAfter` (negative when expired).
+    pub days_until_expiry: Option<i64>,
+    /// Subject and issuer are identical (strong signal of a self-signed certificate).
+    pub self_signed: bool,
+    /// The presented identity does not match the SNI hostname.
+    pub hostname_mismatch: bool,
+    /// Number of certificates advertised in the server chain.
+    pub chain_length: usize,
+}
+
+impl TlsCertificateInfo {
+    /// Compact borrowed identity slice used by reports without heap allocation.
+    #[inline]
+    pub fn identity(&self) -> &str {
+        self.subject_cn
+            .as_deref()
+            .or_else(|| self.sans.first().map(String::as_str))
+            .unwrap_or("<no CN>")
+    }
+
+    /// True when the certificate's `notAfter` date is in the past.
+    #[inline]
+    pub fn is_expired(&self) -> bool {
+        self.days_until_expiry.map(|days| days < 0).unwrap_or(false)
+    }
+}
+
 /// Enriched port result produced by `FingerprintColleague` (Stage 3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrichedPortResult {
     pub port: u16,
     pub state: PortState,
     pub service: String,
+    /// Protocol version extracted from the banner (e.g. `OpenSSH_9.7p1`, `nginx/1.26.0`).
+    pub service_version: Option<String>,
     pub banner: Option<String>,
     pub rtt_micros: Option<u64>,
+    /// TLS certificate metadata for TLS-enabled ports.
+    pub tls: Option<TlsCertificateInfo>,
 }
 
 impl EnrichedPortResult {
@@ -414,6 +458,14 @@ pub enum HoneypotBehavior {
     UnusualEphemeralService,
     /// Multiple known honeypot ports are open on the same target.
     HoneypotPortCluster,
+    /// The leaf certificate is self-signed.
+    SelfSignedCertificate,
+    /// The certificate identity does not match the requested SNI hostname.
+    CertificateHostnameMismatch,
+    /// The certificate is expired according to its `notAfter` field.
+    ExpiredCertificate,
+    /// The certificate uses a default/lab identity commonly seen in deception deployments.
+    DefaultCertificateIdentity,
 }
 
 impl HoneypotBehavior {
@@ -432,6 +484,10 @@ impl HoneypotBehavior {
             Self::BannerlessInteractiveService => "bannerless-interactive-service",
             Self::UnusualEphemeralService => "unusual-ephemeral-service",
             Self::HoneypotPortCluster => "honeypot-port-cluster",
+            Self::SelfSignedCertificate => "self-signed-certificate",
+            Self::CertificateHostnameMismatch => "certificate-hostname-mismatch",
+            Self::ExpiredCertificate => "expired-certificate",
+            Self::DefaultCertificateIdentity => "default-certificate-identity",
         }
     }
 
@@ -451,6 +507,10 @@ impl HoneypotBehavior {
             Self::BannerlessInteractiveService => 10,
             Self::UnusualEphemeralService => 10,
             Self::HoneypotPortCluster => 20,
+            Self::SelfSignedCertificate => 25,
+            Self::CertificateHostnameMismatch => 30,
+            Self::ExpiredCertificate => 15,
+            Self::DefaultCertificateIdentity => 25,
         }
     }
 }
@@ -543,11 +603,15 @@ pub struct AuditedPortResult {
     pub port: u16,
     pub state: PortState,
     pub service: String,
+    /// Protocol version extracted from the banner (Stage 3).
+    pub service_version: Option<String>,
     pub banner: Option<String>,
     pub rtt_micros: Option<u64>,
     pub risk: RiskLevel,
     pub category: &'static str,
     pub advisory: String,
+    /// TLS certificate metadata collected by Stage 3.
+    pub tls: Option<TlsCertificateInfo>,
     /// Deception/honeypot behavior classification attached by Stage 4.
     pub honeypot: HoneypotAssessment,
 }
@@ -728,4 +792,12 @@ pub trait ScanMediator: Sync {
     /// Allows the Mediator to delegate to `FingerprintColleague` (if banner grabbing is enabled)
     /// without `ScannerColleague` knowing `FingerprintColleague` exists.
     fn mediate_open_stream(&self, port: u16, stream: &mut TcpStream) -> Option<String>;
+
+    /// Return TLS certificate metadata captured for `port` during Stage 2 stream mediation.
+    ///
+    /// The default implementation returns `None`, which keeps lightweight test mediators
+    /// and alternative engines compatible without implementing TLS collection.
+    fn tls_certificate(&self, _port: u16) -> Option<TlsCertificateInfo> {
+        None
+    }
 }

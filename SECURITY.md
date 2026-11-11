@@ -23,7 +23,7 @@ Durante la auditoría forense de objetos Git históricos del repositorio origina
 
 Cuando un escáner de ciberseguridad interactúa con objetivos no confiables (servidores maliciosos, *honeypots*, *tarpits* o dominios controlados por atacantes), el propio equipo que ejecuta el escaneo puede ser víctima de ataques de rebote o agotamiento de recursos. Se implementaron **6 defensas activas** para el equipo de origen:
 
-> Los controles de legitimidad, mutación de tráfico y clasificación de honeypots introducidos en la v2.1 se documentan por separado en la **Sección 3**.
+> Los controles de legitimidad, mutación de tráfico, reconocimiento TLS/X.509 y clasificación de honeypots introducidos en las versiones 2.1 y 2.2 se documentan por separado en la **Sección 3**.
 
 ### 2.1. Escudo Anti-DNS Rebinding y Bloqueo de IPs Peligrosas (`Stage 1`)
 - **Riesgo (CWE-350 / SSRF contra el host local)**: Un atacante configura un dominio externo para que resuelva a `127.0.0.1`, `::1`, `0.0.0.0` o `169.254.169.254`, engañando al analista para que escanee su propio equipo de origen o servicios *link-local*.
@@ -57,9 +57,9 @@ Cuando un escáner de ciberseguridad interactúa con objetivos no confiables (se
 
 ---
 
-## 3. Controles de Legitimidad, Mutación y Análisis de Engaño (v2.1)
+## 3. Controles de Legitimidad, Mutación, Reconocimiento TLS y Análisis de Engaño (v2.1 / v2.2)
 
-La versión 2.1 añade un **sobre de legitimidad** y un **clasificador conductual de honeypots**. Ambos están diseñados para mejorar la calidad de una auditoría autorizada, no para ocultar actividad maliciosa. A diferencia de las defensas de la Sección 2, estos controles no protegen al equipo de origen de un atacante: protegen la **validez del ejercicio** y ayudan al analista a interpretar el entorno objetivo.
+La evolución v2.1 / v2.2 añade un **sobre de legitimidad**, **reconocimiento TLS/X.509 sin descifrado**, **extracción conservadora de versión de servicio** y un **clasificador conductual de honeypots**. Todos están diseñados para mejorar la calidad de una auditoría autorizada, no para ocultar actividad maliciosa. A diferencia de las defensas de la Sección 2, estos controles no protegen al equipo de origen de un atacante: protegen la **validez del ejercicio** y ayudan al analista a interpretar el entorno objetivo.
 
 ### 3.1. Sobre de cadencia y backoff adaptativo (`Stage 2` + [`stealth.rs`](src/stealth.rs))
 
@@ -98,14 +98,20 @@ La versión 2.1 añade un **sobre de legitimidad** y un **clasificador conductua
   - Firmas de frameworks conocidos (Cowrie, Kippo, Dionaea, Glastopf, Honeyd, Thinkst Canary, OpenCanary, Conpot, Endlessh, entre otras).
   - Puertos típicos de honeypot (`2222`, `22222`, `2323`, `4444`, `5555`, `8081`, `8082`, `9999`, `10000`, `31337`, `5038`) y clústeres de tres o más.
   - Incoherencia entre el protocolo del banner y el servicio/puerto declarado; banners que mezclan protocolos incompatibles.
-  - Latencia de tarpit (> 2.5 s fuera de loopback), servicios interactivos sin banner, prompts de credenciales inesperados, versiones legacy/falsas y servicios en puertos efímeros (`≥ 49152`).
+  - Latencia de tarpit (> 2.5 s fuera de loopback), servicios interactivos sin banner, prompts de credenciales inesperados, versiones legacy/falsas y servicios en puertos efímeros (`≥ 49152`), además de anomalías de certificado TLS/X.509 (`self-signed-certificate`, `certificate-hostname-mismatch`, `expired-certificate`, `default-certificate-identity`).
   - Señales agregadas: exposición masiva (10+ abiertos y 35%+ del total escaneado), RTT sospechosamente uniforme (6+ abiertos con dispersión ≤ 200 µs), banners clonados (3+ idénticos) y clúster de puertos señuelo.
 - **Veredictos**: `clean` (score < 30), `possible-honeypot` (30–69) y `honeypot` (≥ 70). El score y las evidencias se incluyen en el reporte humano, JSON y CSV.
 - **Respuesta mediada**: `PossibleHoneypotDetected` o `ConfirmedHoneypotDetected` se convierten en alertas (`deception_alerts`) y en los contadores `possible_honeypot_count` / `confirmed_honeypot_count` del resumen de postura.
 - **Control de interacción**: `HoneypotColleague` **no** envía credenciales, exploits ni payloads de explotación; solo analiza los banners y metadatos ya obtenidos por `Stage 2`/`Stage 3`. El buffer de lectura sigue acotado a 512 bytes y los timeouts/backoff limitan el impacto de tarpits.
 - **Naturaleza del veredicto**: es una **hipótesis basada en comportamiento observable**, no una prueba forense. Un falso positivo es posible; corrobora con el propietario del activo, el contexto de red y la ventana de auditoría.
 
-### 3.5. Límites de los controles y advertencia legal
+### 3.5. Reconocimiento TLS 1.2 y Parser X.509 Acotado (`Stage 2` / `Stage 3` + [`tls.rs`](src/tls.rs))
+
+- **Alcance estrictamente de reconocimiento**: en puertos TLS habituales y solo cuando `grab_banners` está activo, el Mediador envía un `ClientHello` TLS 1.2 mínimo con SNI y lee el mensaje `Certificate` del servidor. **No completa el handshake, no deriva claves de sesión y no descifra ni intercepta tráfico de aplicación.**
+- **Protección del equipo de origen en el parser DER/X.509**: lectura acotada por `banner_timeout`, tamaño máximo de respuesta (`16 KiB` / 8 registros TLS), límite de longitud de identidad (`128` caracteres) y máximo `16` entradas SAN, con sanitización de caracteres de control y almacenamiento en cold path (`Mutex<HashMap<u16, TlsCertificateInfo>>`).
+- **Límite criptográfico**: el parser extrae metadatos X.509 para inventario y detección de anomalías, pero **no valida firmas criptográficas ni cadenas de confianza contra una CA raíz**.
+
+### 3.6. Límites de los controles y advertencia legal
 
 - **No hay garantía de evasión**: los sistemas defensivos pueden seguir detectando el escaneo por volumen, reputación de IP/ASN, JA3/JA4, timing, geolocalización, correlación con otros eventos o análisis humano. El score de legitimidad es una autoevaluación de configuración, no una promesa de invisibilidad.
 - **`--ai-filter` no modifica el tráfico por sí solo**: activa el libro de contabilidad y la telemetría de legitimidad. Las palancas que cambian el comportamiento son `--jitter-ms`, `--max-pps`, `--burst`, `--persona` y `--adaptive-pacing`.

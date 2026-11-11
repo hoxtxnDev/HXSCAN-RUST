@@ -22,9 +22,9 @@
 
 ---
 
-## 🚀 ¿Qué es `HXSCAN-RUST` (`tcpscan` v2.1)?
+## 🚀 ¿Qué es `HXSCAN-RUST` (`tcpscan` v2.2)?
 
-`HXSCAN-RUST` es la evolución completa en **Rust** del antiguo escáner en Python, rediseñado como una herramienta profesional de auditoría de ciberseguridad (**TCP Port Scanning, Attack Surface Auditing & Deception Detection**). La versión **2.1** incorpora modos de baja huella y camuflaje corporativo, un sobre de legitimidad anti-IA y clasificación conductual de honeypots, manteniendo intactos los dos pilares del proyecto:
+`HXSCAN-RUST` es la evolución completa en **Rust** del antiguo escáner en Python, rediseñado como una herramienta profesional de auditoría de ciberseguridad (**TCP Port Scanning, Attack Surface Auditing, TLS/X.509 Reconnaissance & Deception Detection**). La versión **2.2** añade reconocimiento TLS real, extracción de versiones de servicio y evidencia de certificado para la detección de honeypots, sobre la base de los modos de baja huella, camuflaje corporativo y sobre de legitimidad anti-IA introducidos en la 2.1. Mantiene intactos los dos pilares del proyecto:
 
 1. **Arquitectura Modular gobernada por el Patrón de Diseño `Mediator` (*Mediador / Intermediary / Controller*)**:
    - Cada etapa (`DiscoveryColleague`, `ScannerColleague`, `FingerprintColleague`, `HoneypotColleague`, `AuditColleague`, `ReportColleague`) está completamente desacoplada (**0 imports cruzados entre etapas**) y se comunica exclusivamente a través de [`ScanController`](src/mediator/controller.rs) mediante eventos tipados ([`ScanEvent`](src/mediator/contract.rs)) y directivas reactivas ([`MediatorDirective`](src/mediator/contract.rs)).
@@ -35,7 +35,27 @@
 
 ---
 
-## ✨ Novedades de la versión 2.1
+## ✨ Novedades de la versión 2.2
+
+| Capacidad | Qué aporta |
+|-----------|------------|
+| 🔐 **Reconocimiento TLS 1.2** | `ClientHello` mínimo con SNI sobre el socket ya abierto; el handshake se detiene tras el certificado del servidor. **No descifra tráfico ni completa la sesión.** |
+| 📜 **Inteligencia X.509** | Subject/Issuer CN, DNS SANs, `notAfter`, días restantes, autofirmado, mismatch de hostname y longitud de cadena anunciada. |
+| 🏷️ **Versión de servicio** | Extracción conservadora de producto/versión desde banners SSH, HTTP, FTP, SMTP, MySQL y Redis (columna `Version` en el reporte humano). |
+| 🍯 **Evidencia de certificado** | `self-signed-certificate`, `certificate-hostname-mismatch`, `expired-certificate` y `default-certificate-identity` se suman al score conductual de honeypot. |
+| 📊 **Reportes ampliados** | Sección `[TLS Certificate Intelligence]` en texto, bloque `tls` + `service_version` en JSON y 7 columnas TLS en CSV. |
+| 🧪 **Cobertura reforzada** | Parser DER/X.509, `ClientHello`, extracción de versiones y captura TLS end-to-end contra un servidor loopback instrumentado. |
+
+### Límites de seguridad del reconocimiento TLS
+
+- Solo se intenta en puertos TLS habituales (`443`, `465`, `636`, `853`, `993`, `995`, `2376`, `5986`, `6443`, `8443`, `8883`, `9443`) y con `grab_banners` activo.
+- En `--stealth` los banners están desactivados por defecto, por lo que **no se capturan certificados** salvo que se habilite explícitamente.
+- La herramienta **no valida firmas, no completa el handshake y no deriva claves**: el certificado se trata como metadato de reconocimiento, no como prueba criptográfica.
+- Un certificado puede ser spoofeado por un endpoint engañoso; las señales TLS son **evidencia corroborante**, no un veredicto definitivo.
+
+---
+
+## ✨ Base de la versión 2.1
 
 | Capacidad | Qué aporta |
 |-----------|------------|
@@ -51,23 +71,25 @@
 
 ## 🔥 ¿Por qué es mejor que la versión anterior?
 
-| Dimensión | Versión Antigua (Python v1.0) | Nueva Versión (`HXSCAN-RUST` / `tcpscan` v2.1) |
+| Dimensión | Versión Antigua (Python v1.0) | Nueva Versión (`HXSCAN-RUST` / `tcpscan` v2.2) |
 |-----------|-------------------------------|-----------------------------------------------|
 | **Lenguaje y Runtime** | Python interpretado (limitado por GIL) | **Rust nativo** (`LTO` + `opt-level = 3`), binario autónomo |
 | **Arquitectura** | Script monolítico acoplado (`hxscan.py`) | **Modular en 6 Etapas + Patrón `Mediator`** (`0` acoplamiento cruzado) |
 | **Deduplicación de Puertos** | `set[int]` en heap + `sorted()` | **`PortBitmap` en stack de `8 KiB` (`[u64; 1024]`)**, $O(1)$ memoria |
-| **Concurrencia TCP** | `queue.Queue` + `threading.Lock` en cada puerto | **Lock-Free** (`AtomicUsize` + buffers locales por hilo, **0 Mutexes**) |
+| **Concurrencia TCP** | `queue.Queue` + `threading.Lock` en cada puerto | **Hot path Lock-Free** (`AtomicUsize` + buffers locales por hilo; `Mutex` solo en cold path al guardar certificados TLS) |
 | **Semántica de Estados TCP** | Solo `open`, `closed`, `error` | **`open` (`SYN-ACK`), `closed` (`RST`), `filtered` (Firewall Drop) y `error` + RTT ($\mu\text{s}$)** |
 | **Fingerprinting Activo** | Diccionario estático de 43 puertos | **70+ servicios (búsqueda binaria) + Active Banner Grabbing** sobre el mismo socket abierto |
 | **Modos Evasivos** | Ninguno | **`--stealth` (bajo ruido) y `--mutable` (camuflaje corporativo)** con jitter, rate ceiling, bursts y backoff adaptativo |
 | **Mutación de Tráfico** | Ninguna | **5 personas empresariales** y cabeceras HTTP mutadas (`User-Agent`, `Accept`, `Accept-Language`, etc.) |
 | **Anti-IA / Legitimidad** | Ninguno | **Sobre de legitimidad**, score `0-100` y grado `A`–`F` incluidos en el reporte |
 | **Detección de Honeypots** | Ninguna | **Clasificación conductual** `clean` / `possible-honeypot` / `honeypot` con evidencias explicables |
+| **Reconocimiento TLS/X.509** | Ninguno | **`ClientHello` TLS 1.2 + parser DER**: CN, SANs, expiración, autofirmado, mismatch y cadena, sin descifrar tráfico |
+| **Versión de Servicio** | Diccionario estático | **Extracción desde banners reales** (`OpenSSH_9.7p1`, `nginx/1.26.0`, `vsFTPd 3.0.5`, etc.) |
 | **Seguridad Terminal & Host** | Sin filtrado de respuesta | **Protección del Equipo de Origen (`--protect-origin`, Anti-DNS Rebinding, Anti-CSV Injection, Sanitización ANSI CSI/OSC, `#![forbid(unsafe_code)]`)** |
 | **Auditoría Ciberseguridad** | Ninguna | **Motor de Riesgo (`CRITICAL` a `INFO`), Posture Score (`0-100`, Grado `A`–`F`) y alertas en vivo** |
 | **Formatos de Salida** | Texto plano (con bug de puertos cerrados) | **Tabla Humana ANSI, JSON (`--json` para SIEM) y CSV (`--csv`) con telemetría stealth y honeypot** |
 | **Ejecución CLI** | Obligatorio usar `-t <host> -p <ports>` | **Simplicidad posicional `tcpscan <host> [ports]`**, `host:port`, perfiles y flags clásicos |
-| **Testing** | 15 tests básicos | **60 tests en Rust** (49 unitarios + 11 de integración y traza del Mediador) |
+| **Testing** | 15 tests básicos | **74 tests en Rust** (62 unitarios + 12 de integración, incluyendo TLS/X.509 y captura end-to-end) |
 
 ---
 
@@ -226,13 +248,17 @@ El nuevo `HoneypotColleague` analiza **todos** los puertos enriquecidos y emite 
 | `known-honeypot-signature` | 80 | Banner coincide con Cowrie, Kippo, Dionaea, Glastopf, Honeyd, Thinkst Canary, Conpot, Endlessh, etc. |
 | `mass-open-services` | 45 | ≥ 10 puertos abiertos y ≥ 35% de los puertos escaneados |
 | `service-port-mismatch` | 35 | El banner habla un protocolo distinto al servicio/puerto esperado |
+| `certificate-hostname-mismatch` | 30 | El certificado presentado no cubre el hostname solicitado por SNI |
 | `contradictory-banner` | 30 | Un mismo banner mezcla protocolos incompatibles |
 | `cloned-banners` | 25 | ≥ 3 servicios devuelven exactamente el mismo banner |
+| `self-signed-certificate` | 25 | Certificado hoja autofirmado (subject == issuer) |
+| `default-certificate-identity` | 25 | Identidad de laboratorio/por defecto (`localhost`, `*.local`, `example.com`, etc.) |
 | `honeypot-port` | 20 | Puerto típico de despliegues honeypot (`2222`, `2323`, `4444`, `9999`, `31337`, etc.) |
 | `tarpit-latency` | 20 | Handshake > 2.5 s fuera de loopback |
 | `uniform-rtt` | 20 | ≥ 6 servicios con una dispersión de RTT ≤ 200 µs |
 | `honeypot-port-cluster` | 20 | ≥ 3 puertos típicos de honeypot abiertos en el mismo objetivo |
 | `default-credential-prompt` | 20 | Prompt interactivo de credenciales en un servicio inesperado |
+| `expired-certificate` | 15 | Certificado fuera de vigencia según `notAfter` |
 | `fake-version-disclosure` | 15 | Versiones legacy/falsas típicas de frameworks de decepción |
 | `bannerless-interactive-service` | 10 | Servicio interactivo que acepta conexión pero no envía banner |
 | `unusual-ephemeral-service` | 10 | Servicio expuesto en un puerto efímero (`≥ 49152`) |
@@ -249,8 +275,8 @@ El nuevo `HoneypotColleague` analiza **todos** los puertos enriquecidos y emite 
 ```text
 Mode: mutable | Persona: corporate | AI-Filter: on | Legitimacy: 93/100 (A)
 ...
-Port     State      RTT        Service          Risk     Honeypot   Banner / Details
-2222     open       0.90ms     SSH              LOW      HONEYPOT   SSH-2.0-Cowrie-1.0
+Port     State      RTT        Service          Version          Risk     Honeypot   Banner / Details
+2222     open       0.90ms     SSH              -                LOW      HONEYPOT   SSH-2.0-Cowrie-1.0
 
 [Honeypot & Deception Behavior Analysis]
   • Port 2222  (SSH): HONEYPOT 100/100 — known-honeypot-signature, honeypot-port
@@ -260,6 +286,40 @@ Scanned: 120 port(s) | Open: 4 | Closed: 110 | Filtered: 6 | Honeypots: 1 confir
 ```
 
 > 🍯 Un veredicto `possible-honeypot` o `honeypot` es una **hipótesis basada en comportamiento observable**, no una prueba forense. Corrobora siempre con contexto del activo, propietario y ventana de auditoría.
+
+---
+
+## 🔐 Reconocimiento TLS y Versión de Servicio (`Stage 2` / `Stage 3`)
+
+En puertos TLS habituales, el Mediador realiza un `ClientHello` TLS 1.2 **mínimo** sobre el socket ya abierto y lee únicamente el mensaje `Certificate` del servidor. No se completa el handshake, no se validan firmas, no se derivan claves y **no se descifra ni se envía tráfico de aplicación**.
+
+```text
+[TLS Certificate Intelligence]
+  • Port 443   CN=portal.example.com | issuer=Example CA | expires=2027-03-01 12:00:00Z (110d) | self-signed=no | SANs=portal.example.com, www.example.com | chain=2
+  • Port 8443  CN=localhost | issuer=localhost | expires=2025-01-01 00:00:00Z (-310d) | self-signed=yes | SANs=localhost | chain=1
+    certificate does not match the requested hostname
+```
+
+Metadatos extraídos:
+
+| Campo | Uso |
+|-------|-----|
+| `subject_cn` / `issuer_cn` | Identidad del servicio y emisor |
+| `sans` | Nombres DNS cubiertos (máx. 16) |
+| `not_after` / `days_until_expiry` | Vigencia y días restantes (negativos = expirado) |
+| `self_signed` | `subject == issuer` (heurística) |
+| `hostname_mismatch` | El certificado no cubre el hostname solicitado |
+| `chain_length` | Nº de certificados anunciados por el servidor |
+
+La **versión de servicio** se extrae de banners ya capturados, sin tráfico adicional:
+
+```text
+Port     State      RTT        Service          Version          Risk     Honeypot   Banner / Details
+22       open       0.42ms     SSH              OpenSSH_9.7p1    LOW      CLEAN      SSH-2.0-OpenSSH_9.7p1 Ubuntu-3
+443      open       0.31ms     HTTPS            nginx/1.26.2     INFO     CLEAN      HTTP/1.1 200 OK (nginx/1.26.2)
+```
+
+> 🔒 **Alcance**: el reconocimiento TLS está pensado para inventariar certificados y detectar identidades débiles o de laboratorio. No sustituye a un escáner TLS especializado (cifrados, protocolos obsoletos, cadena de confianza completa) y no debe usarse para interceptar comunicaciones.
 
 ---
 
@@ -276,18 +336,19 @@ Scanned: 120 port(s) | Open: 4 | Closed: 110 | Filtered: 6 | Honeypots: 1 confir
 │   ├── 📄 main.rs                       # Entrypoint del binario `tcpscan`
 │   ├── 📄 cli.rs                        # [Stage 0: CliColleague] Parser ergonómico, perfiles y cuotas
 │   ├── 📄 stealth.rs                    # PacingController, jitter, decoys, personas y score de legitimidad
+│   ├── 📄 tls.rs                        # ClientHello TLS 1.2 + parser DER/X.509 de reconocimiento
 │   ├── 📁 mediator/
 │   │   ├── 📄 mod.rs                    # Exportaciones del Mediador
-│   │   ├── 📄 contract.rs               # Trait `ScanMediator`, eventos, directivas y DTOs stealth/honeypot
-│   │   └── 📄 controller.rs             # `ScanController` (Mediador Concreto + Event Trace)
+│   │   ├── 📄 contract.rs               # Trait `ScanMediator`, eventos, directivas y DTOs stealth/honeypot/TLS
+│   │   └── 📄 controller.rs             # `ScanController` (Mediador Concreto + Event Trace + captura TLS)
 │   └── 📁 stages/
 │       ├── 📄 mod.rs                    # Registro de los 6 Colegas desacoplados
 │       ├── 📄 stage1_discovery.rs       # [Stage 1: DiscoveryColleague] DNS, Anti-Rebinding y PortBitmap (8 KiB)
 │       ├── 📄 stage2_scanner.rs         # [Stage 2: ScannerColleague] Sondeo TCP Lock-Free + PacingController
-│       ├── 📄 stage3_fingerprint.rs     # [Stage 3: FingerprintColleague] 70+ servicios + mutación por persona
-│       ├── 📄 stage4_honeypot.rs        # [Stage 4: HoneypotColleague] Clasificación conductual de honeypots
+│       ├── 📄 stage3_fingerprint.rs     # [Stage 3: FingerprintColleague] 70+ servicios, versiones y TLS
+│       ├── 📄 stage4_honeypot.rs        # [Stage 4: HoneypotColleague] Clasificación conductual + señales TLS
 │       ├── 📄 stage5_audit.rs           # [Stage 5: AuditColleague] Riesgo SOC/Pentest + veredictos honeypot
-│       └── 📄 stage6_report.rs          # [Stage 6: ReportColleague] ANSI, JSON y CSV con stealth/honeypot
+│       └── 📄 stage6_report.rs          # [Stage 6: ReportColleague] ANSI, JSON y CSV con TLS/honeypot
 └── 📁 tests/
     └── 📄 pipeline_integration.rs       # Suite de integración end-to-end y verificación del Mediador
 ```
@@ -306,6 +367,7 @@ flowchart LR
     ST["stealth.rs (pacing / personas / legitimacy)"] -.-> S2
     ST -.-> S3
     ST -.-> CTRL
+    TLS["tls.rs (ClientHello TLS 1.2 / X.509 DER)"] -.-> CTRL
 ```
 
 *(Ver diagramas UML completos de Clases, Secuencia, Estados, Topología y flujos de decisión en [`ARCHITECTURE_MEDIATOR_UML.md`](ARCHITECTURE_MEDIATOR_UML.md)).*
@@ -314,12 +376,12 @@ flowchart LR
 
 ## 📡 Salida JSON y CSV
 
-El reporte JSON incluye bloques `stealth`, `summary` y `honeypot` para automatización SOC/SOAR:
+El reporte JSON incluye bloques `stealth`, `summary`, `tls` y `honeypot` para automatización SOC/SOAR:
 
 ```json
 {
   "scanner": "tcpscan-rs",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "pattern": "Mediator",
   "stealth": {
     "mode": "mutable",
@@ -336,20 +398,31 @@ El reporte JSON incluye bloques `stealth`, `summary` y `honeypot` para automatiz
   },
   "ports": [
     {
-      "port": 2222,
+      "port": 443,
       "state": "open",
-      "service": "SSH",
+      "service": "HTTPS",
+      "service_version": "nginx/1.26.2",
+      "tls": {
+        "subject_cn": "portal.example.com",
+        "issuer_cn": "Example CA",
+        "sans": ["portal.example.com", "www.example.com"],
+        "not_after": "2027-03-01 12:00:00Z",
+        "days_until_expiry": 110,
+        "self_signed": false,
+        "hostname_mismatch": false,
+        "chain_length": 2
+      },
       "honeypot": {
-        "verdict": "honeypot",
-        "score": 100,
-        "behaviors": ["known-honeypot-signature", "honeypot-port"]
+        "verdict": "clean",
+        "score": 0,
+        "behaviors": []
       }
     }
   ]
 }
 ```
 
-El CSV añade las columnas `honeypot_verdict`, `honeypot_score` y `honeypot_behaviors`, manteniendo la neutralización de fórmulas CWE-1236.
+El CSV incorpora `service_version` y siete columnas TLS (`tls_subject_cn`, `tls_issuer_cn`, `tls_self_signed`, `tls_hostname_mismatch`, `tls_days_until_expiry`, `tls_not_after`, `tls_sans`), manteniendo la neutralización de fórmulas CWE-1236.
 
 ---
 
@@ -359,9 +432,9 @@ El CSV añade las columnas `honeypot_verdict`, `honeypot_score` y `honeypot_beha
 cargo test
 ```
 
-Incluye **60 pruebas automatizadas**:
-- **49 pruebas unitarias** distribuidas en cada etapa y en `stealth.rs` (`PortBitmap` de 65,535 puertos, clasificación de alcance IP, bloqueo de DNS Rebinding y `0.0.0.0`, distribución multihilo *lock-free*, `MockStream` para sondas HTTP/Redis/SSH, mutación de cabeceras por persona, pacing adaptativo, jitter, decoys, sanitización ANSI CSI/OSC, protección CSV CWE-1236, escalado de severidad, firmas y señales agregadas de honeypot, formatos de reporte).
-- **11 pruebas de integración** en [`tests/pipeline_integration.rs`](tests/pipeline_integration.rs) verificando la traza cronológica del **Mediator** (`event_trace`), directivas reactivas (`PublicTargetHardeningMode`, `FirewallDropDetected`, `AdaptivePacingEngaged`, `PossibleHoneypotDetected`, `ConfirmedHoneypotDetected`, `EscalateCriticalAlert`), telemetría `mutable`, clasificación de honeypots, bloqueo `--protect-origin`, sockets y códigos de salida (`0`, `1`, `2`).
+Incluye **74 pruebas automatizadas**:
+- **62 pruebas unitarias** distribuidas en cada etapa, `stealth.rs` y `tls.rs` (`PortBitmap` de 65,535 puertos, clasificación de alcance IP, bloqueo de DNS Rebinding y `0.0.0.0`, distribución multihilo *lock-free*, `MockStream` para sondas HTTP/Redis/SSH, mutación de cabeceras por persona, pacing adaptativo, jitter, decoys, sanitización ANSI CSI/OSC, protección CSV CWE-1236, escalado de severidad, firmas y señales agregadas de honeypot, **parser DER/X.509, SNI, SAN, wildcard matching, expiración, self-signed y ClientHello TLS 1.2**, extracción de versiones y formatos de reporte).
+- **12 pruebas de integración** en [`tests/pipeline_integration.rs`](tests/pipeline_integration.rs) verificando la traza cronológica del **Mediator** (`event_trace`), directivas reactivas (`PublicTargetHardeningMode`, `FirewallDropDetected`, `AdaptivePacingEngaged`, `PossibleHoneypotDetected`, `ConfirmedHoneypotDetected`, `EscalateCriticalAlert`), telemetría `mutable`, clasificación de honeypots, bloqueo `--protect-origin`, **captura TLS end-to-end contra un servidor loopback instrumentado**, sockets y códigos de salida (`0`, `1`, `2`).
 
 ---
 

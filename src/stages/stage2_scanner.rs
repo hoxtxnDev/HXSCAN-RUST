@@ -69,16 +69,20 @@ impl ScannerColleague {
 }
 
 /// Classify a [`std::io::Error`] from `TcpStream::connect_timeout` into `(PortState, should_retry)`.
+#[inline]
 pub fn classify_connect_error(err: &io::Error) -> (PortState, bool) {
     match err.kind() {
         ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset => (PortState::Closed, false),
-        ErrorKind::TimedOut | ErrorKind::WouldBlock => (PortState::Filtered, true),
-        default_kind => {
+        ErrorKind::TimedOut
+        | ErrorKind::WouldBlock
+        | ErrorKind::HostUnreachable
+        | ErrorKind::NetworkUnreachable => (PortState::Filtered, true),
+        _ => {
             let is_filtered_os = matches!(
                 err.raw_os_error(),
-                Some(60) | Some(65) | Some(51) | Some(110) | Some(113)
+                Some(51 | 60 | 65 | 110 | 113 | 10051 | 10060 | 10065)
             );
-            if is_filtered_os || format!("{default_kind:?}").contains("Unreachable") {
+            if is_filtered_os {
                 (PortState::Filtered, true)
             } else {
                 (PortState::Error(err.to_string()), false)

@@ -51,6 +51,7 @@ pub const SERVICE_TABLE: &[(u16, &str)] = &[
     (514, "Syslog"),
     (587, "SMTP-submission"),
     (636, "LDAPS"),
+    (853, "DNS-over-TLS"),
     (873, "Rsync"),
     (993, "IMAPS"),
     (995, "POP3S"),
@@ -80,6 +81,7 @@ pub const SERVICE_TABLE: &[(u16, &str)] = &[
     (8000, "HTTP-alt3"),
     (8080, "HTTP-alt"),
     (8443, "HTTPS-alt"),
+    (8883, "MQTTS"),
     (8888, "HTTP-proxy"),
     (9000, "FastCGI"),
     (9042, "Cassandra"),
@@ -87,6 +89,7 @@ pub const SERVICE_TABLE: &[(u16, &str)] = &[
     (9092, "Kafka"),
     (9200, "Elasticsearch"),
     (9418, "Git"),
+    (9443, "HTTPS-mgmt"),
     (10250, "Kubelet"),
     (11211, "Memcached"),
     (27017, "MongoDB"),
@@ -121,9 +124,17 @@ impl FingerprintColleague {
     }
 
     /// Enrich all raw probe results stored in the Mediator and emit [`ScanEvent::FingerprintingCompleted`].
+    ///
+    /// TLS certificates captured during Stage 2 stream mediation are attached here,
+    /// keeping `ScannerColleague` unaware of certificate parsing.
     pub fn run(mediator: &mut ScanController) -> MediatorDirective {
         let raw = std::mem::take(&mut mediator.raw_results);
-        let enriched_results = enrich_probe_results(raw);
+        let mut enriched_results = enrich_probe_results(raw);
+        for item in &mut enriched_results {
+            if item.state == PortState::Open {
+                item.tls = mediator.tls_certificate(item.port);
+            }
+        }
         mediator.notify(
             ComponentId::FingerprintColleague,
             ScanEvent::FingerprintingCompleted { enriched_results },
@@ -148,8 +159,10 @@ impl EnrichedPortResult {
             port,
             state,
             service: resolved_service,
+            service_version: None,
             banner: None,
             rtt_micros: None,
+            tls: None,
         }
     }
 }
@@ -279,13 +292,125 @@ pub fn infer_service_from_banner(banner: &str) -> Option<&'static str> {
     }
 }
 
+/// Extract a human-readable product version from a sanitized banner.
+///
+/// The function is intentionally conservative: it only recognizes well-known
+/// protocol greetings and HTTP `Server` products, avoiding speculative matches
+/// that would pollute the report with random tokens.
+pub fn extract_service_version(service: &str, banner: Option<&str>) -> Option<String> {
+    let banner = banner?;
+    let first = banner.lines().next()?.trim();
+    if first.is_empty() {
+        return None;
+    }
+
+    for prefix in ["SSH-2.0-", "SSH-1.99-", "SSH-1.5-"] {
+        if let Some(rest) = first.strip_prefix(prefix) {
+            let version = rest.split_whitespace().next()?.trim();
+            if !version.is_empty() {
+                return Some(truncate_version(version));
+            }
+        }
+    }
+
+    let lower = service.to_ascii_lowercase();
+    if lower.contains("http")
+        || lower.contains("winrm")
+        || lower.contains("kubernetes")
+        || lower.contains("docker")
+        || lower.contains("elastic")
+        || lower.contains("kibana")
+    {
+        if let Some(start) = first.rfind('(') {
+            if let Some(rest) = first.get(start + 1..) {
+                if let Some(end) = rest.rfind(')') {
+                    let product = rest[..end].trim();
+                    if !product.is_empty() {
+                        return Some(truncate_version(product));
+                    }
+                }
+            }
+        }
+    }
+
+    if lower.contains("ftp")
+        || lower.contains("smtp")
+        || lower.contains("mail")
+        || lower.contains("pop3")
+        || lower.contains("imap")
+    {
+        let greeting = first.strip_prefix("220").unwrap_or(first).trim();
+        for marker in [
+            "vsFTPd",
+            "ProFTPD",
+            "Pure-FTPd",
+            "FileZilla",
+            "Postfix",
+            "Exim",
+            "Sendmail",
+            "Microsoft",
+            "Dovecot",
+            "Courier",
+        ] {
+            if let Some(position) = find_ignore_ascii_case(greeting, marker) {
+                let product = greeting[position..]
+                    .trim()
+                    .trim_end_matches(|ch| ch == ')' || ch == ']');
+                if !product.is_empty() {
+                    return Some(truncate_version(product));
+                }
+            }
+        }
+    }
+
+    if lower.contains("mysql") || lower.contains("maria") {
+        for token in banner.split(|ch: char| ch.is_whitespace() || ch.is_control()) {
+            let candidate = token.trim_matches(|ch: char| !ch.is_ascii_graphic());
+            if candidate.contains('.') && candidate.chars().any(|ch| ch.is_ascii_digit()) {
+                return Some(truncate_version(candidate));
+            }
+        }
+    }
+
+    if lower.contains("redis") {
+        if let Some(position) = find_ignore_ascii_case(banner, "redis_version:") {
+            let rest = &banner[position + "redis_version:".len()..];
+            let version = rest
+                .split(|ch: char| ch.is_whitespace() || ch == '\r' || ch == '\n')
+                .next()?
+                .trim();
+            if !version.is_empty() {
+                return Some(truncate_version(version));
+            }
+        }
+    }
+
+    None
+}
+
+#[inline]
+fn find_ignore_ascii_case(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    let needle_bytes = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle_bytes.len())
+        .position(|window| window.eq_ignore_ascii_case(needle_bytes))
+}
+
+fn truncate_version(value: &str) -> String {
+    value.trim().chars().take(48).collect()
+}
+
 /// Protocol-aware banner reader operating on any `Read + Write` stream.
 pub fn grab_banner_from_rw<S: Read + Write>(port: u16, stream: &mut S) -> Option<String> {
     let mut buf = [0u8; 512];
 
     if is_http_like_port(port) {
         let _ = stream
-            .write_all(b"HEAD / HTTP/1.0\r\nUser-Agent: tcpscan/2.1\r\nConnection: close\r\n\r\n");
+            .write_all(b"HEAD / HTTP/1.0\r\nUser-Agent: tcpscan/2.2\r\nConnection: close\r\n\r\n");
         if let Ok(n) = stream.read(&mut buf) {
             if n > 0 {
                 return sanitize_banner(&buf[..n]);
@@ -397,12 +522,20 @@ pub fn enrich_probe_results(raw_results: Vec<RawProbeResult>) -> Vec<EnrichedPor
                 }
             }
 
+            let service_version = if raw.state == PortState::Open {
+                extract_service_version(&service, raw.inline_banner.as_deref())
+            } else {
+                None
+            };
+
             EnrichedPortResult {
                 port: raw.port,
                 state: raw.state,
                 service,
+                service_version,
                 banner: raw.inline_banner,
                 rtt_micros: raw.rtt_micros,
+                tls: None,
             }
         })
         .collect()
@@ -563,5 +696,45 @@ mod tests {
             infer_service_from_banner("-NOAUTH Authentication required."),
             Some("Redis")
         );
+    }
+
+    #[test]
+    fn test_extract_service_version_from_common_banners() {
+        assert_eq!(
+            extract_service_version("SSH", Some("SSH-2.0-OpenSSH_9.7p1 Ubuntu-3")),
+            Some("OpenSSH_9.7p1".to_string())
+        );
+        assert_eq!(
+            extract_service_version("HTTP", Some("HTTP/1.1 200 OK (nginx/1.26.0)")),
+            Some("nginx/1.26.0".to_string())
+        );
+        assert_eq!(
+            extract_service_version("FTP", Some("220 (vsFTPd 3.0.5)")),
+            Some("vsFTPd 3.0.5".to_string())
+        );
+        assert_eq!(
+            extract_service_version("SMTP", Some("220 mail.example.test ESMTP Postfix")),
+            Some("Postfix".to_string())
+        );
+        assert_eq!(extract_service_version("Redis", Some("+PONG")), None);
+        assert_eq!(extract_service_version("unknown", Some("READY")), None);
+    }
+
+    #[test]
+    fn test_enrich_probe_results_populates_service_version() {
+        let raw = vec![RawProbeResult {
+            port: 22,
+            state: PortState::Open,
+            rtt_micros: Some(900),
+            attempts: 1,
+            inline_banner: Some("SSH-2.0-OpenSSH_9.7p1".to_string()),
+        }];
+        let enriched = enrich_probe_results(raw);
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(
+            enriched[0].service_version.as_deref(),
+            Some("OpenSSH_9.7p1")
+        );
+        assert!(enriched[0].tls.is_none());
     }
 }

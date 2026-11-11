@@ -1,4 +1,4 @@
-//! Comprehensive End-to-End, Stage, Mediator Pattern & Origin-Protection Tests for `tcpscan` (HXSCAN-RUST v2.1).
+//! Comprehensive End-to-End, Stage, Mediator Pattern & Origin-Protection Tests for `tcpscan` (HXSCAN-RUST v2.2).
 
 use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener};
@@ -178,6 +178,10 @@ fn test_full_pipeline_json_and_csv_reporting_with_formula_injection_shield() {
         .formatted_report
         .contains("\"pattern\": \"Mediator\""));
     assert!(out_json.formatted_report.contains("\"port\": 8080"));
+    assert!(out_json
+        .formatted_report
+        .contains("\"service_version\": \"nginx/1.26.2\""));
+    assert!(out_json.formatted_report.contains("\"tls\": null"));
 
     // CSV mode with malicious formula-injection banner (=cmd|' /C calc'!A0)
     let action_csv = parse_cli_args(["127.0.0.1", "22,443", "--csv"]).unwrap();
@@ -200,7 +204,7 @@ fn test_full_pipeline_json_and_csv_reporting_with_formula_injection_shield() {
         .unwrap();
 
     assert!(out_csv.formatted_report.starts_with(
-        "target,ip,port,state,service,risk,category,rtt_ms,banner,advisory,honeypot_verdict,honeypot_score,honeypot_behaviors\n"
+        "target,ip,port,state,service,service_version,risk,category,rtt_ms,banner,advisory,tls_subject_cn,tls_issuer_cn,tls_self_signed,tls_hostname_mismatch,tls_days_until_expiry,tls_not_after,tls_sans,honeypot_verdict,honeypot_score,honeypot_behaviors\n"
     ));
     assert!(out_csv
         .formatted_report
@@ -273,7 +277,160 @@ fn test_e2e_live_loopback_nonblocking_socket() {
     let _ = server_thread.join();
 
     assert!(exit_code == 0 || exit_code == 2);
-    assert!(stdout.contains("TCPSCAN / HXSCAN v2.1 Audit Report"));
+    assert!(stdout.contains("TCPSCAN / HXSCAN v2.2 Audit Report"));
+}
+
+#[test]
+fn test_e2e_live_tls_certificate_capture_and_json_report() {
+    // TLS-like ports are the only ones where the Mediator starts the exchange.
+    let listener = [8443u16, 9443, 8883, 6443, 5986, 2376]
+        .iter()
+        .find_map(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, *port)).ok())
+        .expect("no free TLS-like loopback port available for the TLS test");
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server_thread = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut hello = [0u8; 2048];
+                let _ = std::io::Read::read(&mut stream, &mut hello);
+                let _ = stream.write_all(&tls_server_response());
+                let _ = stream.flush();
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    });
+
+    let target_with_port = format!("127.0.0.1:{port}");
+    let (exit_code, stdout, _stderr) = run_from_args([
+        &target_with_port,
+        "--timeout",
+        "0.5",
+        "--json",
+        "--no-color",
+    ]);
+
+    let _ = server_thread.join();
+
+    assert_eq!(exit_code, 0, "stdout:\n{stdout}\nstderr:\n{_stderr}");
+    assert!(
+        stdout.contains("\"service_version\": null"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"subject_cn\": \"tls.test\""),
+        "stdout:\n{stdout}"
+    );
+    assert!(stdout.contains("\"issuer_cn\": \"Test CA\""));
+    assert!(stdout.contains("\"self_signed\": false"));
+    assert!(stdout.contains("\"chain_length\": 2"));
+}
+
+fn test_der(tag: u8, value: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    if value.len() < 0x80 {
+        out.push(value.len() as u8);
+    } else {
+        let mut length = value.len();
+        let mut bytes = Vec::new();
+        while length > 0 {
+            bytes.push((length & 0xFF) as u8);
+            length >>= 8;
+        }
+        out.push(0x80 | bytes.len() as u8);
+        for byte in bytes.iter().rev() {
+            out.push(*byte);
+        }
+    }
+    out.extend_from_slice(value);
+    out
+}
+
+fn test_sequence(parts: &[Vec<u8>]) -> Vec<u8> {
+    test_der(0x30, &parts.concat())
+}
+
+fn test_common_name(value: &str) -> Vec<u8> {
+    test_sequence(&[test_der(
+        0x31,
+        &test_sequence(&[
+            test_der(0x06, &[0x55, 0x04, 0x03]),
+            test_der(0x0C, value.as_bytes()),
+        ]),
+    )])
+}
+
+fn tls_test_certificate() -> Vec<u8> {
+    let signature_algorithm = test_sequence(&[
+        test_der(0x06, &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02]),
+        test_der(0x05, &[]),
+    ]);
+    let validity = test_sequence(&[
+        test_der(0x17, b"250101000000Z"),
+        test_der(0x17, b"301231235959Z"),
+    ]);
+    let subject_public_key_info = test_sequence(&[
+        test_sequence(&[
+            test_der(0x06, &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01]),
+            test_der(0x03, &[0x00, 0x01, 0x02]),
+        ]),
+        test_der(0x03, &[0x00, 0xAA]),
+    ]);
+    let san_extension = test_sequence(&[
+        test_der(0x06, &[0x55, 0x1D, 0x11]),
+        test_der(0x04, &test_sequence(&[test_der(0x82, b"tls.test")])),
+    ]);
+    let extensions = test_der(0xA3, &test_sequence(&[san_extension]));
+    let tbs = test_sequence(&[
+        test_der(0xA0, &test_der(0x02, &[0x02])),
+        test_der(0x02, &[0x01]),
+        signature_algorithm.clone(),
+        test_common_name("Test CA"),
+        validity,
+        test_common_name("tls.test"),
+        subject_public_key_info,
+        extensions,
+    ]);
+    test_sequence(&[tbs, signature_algorithm, test_der(0x03, &[0x00, 0xAA])])
+}
+
+fn tls_server_response() -> Vec<u8> {
+    let der = tls_test_certificate();
+
+    // Two identical entries exercise chain-length accounting.
+    let mut certificate_body = Vec::new();
+    let list_length = (der.len() + 3) * 2;
+    certificate_body.push((list_length >> 16) as u8);
+    certificate_body.push((list_length >> 8) as u8);
+    certificate_body.push(list_length as u8);
+    for _ in 0..2 {
+        certificate_body.push((der.len() >> 16) as u8);
+        certificate_body.push((der.len() >> 8) as u8);
+        certificate_body.push(der.len() as u8);
+        certificate_body.extend_from_slice(&der);
+    }
+
+    let mut certificate_message = vec![0x0B];
+    let body_length = certificate_body.len();
+    certificate_message.push((body_length >> 16) as u8);
+    certificate_message.push((body_length >> 8) as u8);
+    certificate_message.push(body_length as u8);
+    certificate_message.extend_from_slice(&certificate_body);
+
+    let server_hello = [0x02, 0x00, 0x00, 0x04, 0x03, 0x03, 0x00, 0x00];
+
+    let mut handshake = Vec::new();
+    handshake.extend_from_slice(&server_hello);
+    handshake.extend_from_slice(&certificate_message);
+
+    let mut record = vec![0x16, 0x03, 0x03];
+    record.push((handshake.len() >> 8) as u8);
+    record.push(handshake.len() as u8);
+    record.extend_from_slice(&handshake);
+    record
 }
 
 #[test]
@@ -295,7 +452,7 @@ fn test_e2e_exit_code_1_on_invalid_arguments_and_ports() {
 
     let (code_ver, stdout_ver, _) = run_from_args(["--version"]);
     assert_eq!(code_ver, 0);
-    assert!(stdout_ver.contains("tcpscan 2.1.0"));
+    assert!(stdout_ver.contains("tcpscan 2.2.0"));
 }
 
 #[test]

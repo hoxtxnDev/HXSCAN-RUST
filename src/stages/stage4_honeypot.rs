@@ -80,7 +80,6 @@ impl HoneypotColleague {
             .map(|t| t.scope)
             .unwrap_or(AddressScope::Private);
         let assessments = analyze_honeypots(&mediator.enriched_results, scope);
-        mediator.honeypot_assessments = assessments.clone();
 
         mediator.notify(
             ComponentId::HoneypotColleague,
@@ -143,16 +142,16 @@ fn build_context(
             .saturating_sub(rtts.iter().min().copied().unwrap_or(0))
             <= 200;
 
-    let mut banner_counts: Vec<(String, usize)> = Vec::new();
+    let mut banner_counts: Vec<(&str, usize)> = Vec::new();
     for item in open {
-        if let Some(ref banner) = item.banner {
+        if let Some(banner) = item.banner.as_deref() {
             if banner.len() < 8 {
                 continue;
             }
-            if let Some(entry) = banner_counts.iter_mut().find(|(value, _)| value == banner) {
+            if let Some(entry) = banner_counts.iter_mut().find(|(value, _)| *value == banner) {
                 entry.1 += 1;
             } else {
-                banner_counts.push((banner.clone(), 1));
+                banner_counts.push((banner, 1));
             }
         }
     }
@@ -245,6 +244,28 @@ fn evaluate_honeypot_port_with_context(
     if has_legacy_or_fake_version(&banner_lower) {
         push_behavior(&mut behaviors, HoneypotBehavior::FakeVersionDisclosure);
         notes.push("legacy/fake version string commonly used by deception frameworks".to_string());
+    }
+
+    if let Some(tls) = item.tls.as_ref() {
+        if tls.self_signed {
+            push_behavior(&mut behaviors, HoneypotBehavior::SelfSignedCertificate);
+            notes.push("leaf certificate is self-signed".to_string());
+        }
+        if tls.hostname_mismatch {
+            push_behavior(
+                &mut behaviors,
+                HoneypotBehavior::CertificateHostnameMismatch,
+            );
+            notes.push("certificate identity does not match the requested hostname".to_string());
+        }
+        if tls.is_expired() {
+            push_behavior(&mut behaviors, HoneypotBehavior::ExpiredCertificate);
+            notes.push("leaf certificate is expired".to_string());
+        }
+        if is_default_certificate_identity(tls.subject_cn.as_deref(), &tls.sans) {
+            push_behavior(&mut behaviors, HoneypotBehavior::DefaultCertificateIdentity);
+            notes.push("certificate uses a default/lab identity".to_string());
+        }
     }
 
     if context.mass_open {
@@ -384,17 +405,50 @@ fn has_legacy_or_fake_version(banner: &str) -> bool {
         || banner.contains("openssh_6.")
 }
 
+fn is_default_certificate_identity(subject_cn: Option<&str>, sans: &[String]) -> bool {
+    let candidates = subject_cn
+        .into_iter()
+        .chain(sans.iter().map(String::as_str));
+    candidates.into_iter().any(|name| {
+        let name = name.trim().to_ascii_lowercase();
+        name == "localhost"
+            || name == "example.com"
+            || name == "*.example.com"
+            || name == "test.local"
+            || name == "honeypot"
+            || name == "srv"
+            || name == "server"
+            || name.ends_with(".local")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mediator::TlsCertificateInfo;
 
     fn open_port(port: u16, service: &str, banner: Option<&str>) -> EnrichedPortResult {
         EnrichedPortResult {
             port,
             state: PortState::Open,
             service: service.to_string(),
+            service_version: None,
             banner: banner.map(str::to_string),
             rtt_micros: Some(1_200),
+            tls: None,
+        }
+    }
+
+    fn tls_with(identity: &str, self_signed: bool, mismatch: bool) -> TlsCertificateInfo {
+        TlsCertificateInfo {
+            subject_cn: Some(identity.to_string()),
+            issuer_cn: Some(if self_signed { identity } else { "Test CA" }.to_string()),
+            sans: vec![identity.to_string()],
+            not_after: Some("301231235959Z".to_string()),
+            days_until_expiry: Some(1_000),
+            self_signed,
+            hostname_mismatch: mismatch,
+            chain_length: 1,
         }
     }
 
@@ -454,11 +508,44 @@ mod tests {
             port: 2222,
             state: PortState::Filtered,
             service: "unknown".to_string(),
+            service_version: None,
             banner: None,
             rtt_micros: None,
+            tls: None,
         };
         let assessment = evaluate_honeypot_port(&item, AddressScope::Public);
         assert_eq!(assessment.verdict, HoneypotVerdict::Clean);
         assert_eq!(assessment.score, 0);
+    }
+
+    #[test]
+    fn test_self_signed_tls_certificate_raises_deception_score() {
+        let mut item = open_port(443, "HTTPS", None);
+        item.tls = Some(tls_with("localhost", true, true));
+        let assessment = evaluate_honeypot_port(&item, AddressScope::Private);
+        assert!(assessment
+            .behaviors
+            .contains(&HoneypotBehavior::SelfSignedCertificate));
+        assert!(assessment
+            .behaviors
+            .contains(&HoneypotBehavior::CertificateHostnameMismatch));
+        assert!(assessment
+            .behaviors
+            .contains(&HoneypotBehavior::DefaultCertificateIdentity));
+        assert_ne!(assessment.verdict, HoneypotVerdict::Clean);
+    }
+
+    #[test]
+    fn test_clean_tls_certificate_does_not_add_noise() {
+        let mut item = open_port(443, "HTTPS", None);
+        item.tls = Some(tls_with("portal.example.test", false, false));
+        let assessment = evaluate_honeypot_port(&item, AddressScope::Public);
+        assert!(!assessment
+            .behaviors
+            .contains(&HoneypotBehavior::SelfSignedCertificate));
+        assert!(!assessment
+            .behaviors
+            .contains(&HoneypotBehavior::CertificateHostnameMismatch));
+        assert_eq!(assessment.verdict, HoneypotVerdict::Clean);
     }
 }

@@ -16,13 +16,16 @@
 //!    `FingerprintColleague` exists. In stealth/mutable mode the Mediator injects the configured
 //!    traffic persona so active probes resemble legitimate enterprise clients.
 
+use std::collections::HashMap;
 use std::net::TcpStream;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::mediator::contract::{
     AuditedPortResult, ComponentId, EnrichedPortResult, HoneypotAssessment, MediatedEventRecord,
     MediatorDirective, MediatorState, RawProbeResult, ReportOptions, ScanEvent, ScanMediator,
     ScannerConfig, SecurityPostureSummary, StealthMode, StealthTelemetry, TargetInfo,
+    TlsCertificateInfo,
 };
 use crate::stages::stage1_discovery::{DiscoveryColleague, DiscoveryError};
 use crate::stages::stage2_scanner::ScannerColleague;
@@ -31,6 +34,7 @@ use crate::stages::stage4_honeypot::HoneypotColleague;
 use crate::stages::stage5_audit::AuditColleague;
 use crate::stages::stage6_report::ReportColleague;
 use crate::stealth::evaluate_scan_legitimacy;
+use crate::tls::{inspect_tls_certificate, is_tls_like_port, server_name_from_input};
 
 /// Configuration passed into the [`ScanController`] Mediator.
 #[derive(Debug, Clone)]
@@ -96,6 +100,11 @@ pub struct ScanController {
     pub(crate) summary: Option<SecurityPostureSummary>,
     pub(crate) stealth_telemetry: Option<StealthTelemetry>,
     pub(crate) formatted_report: Option<String>,
+    /// TLS certificate metadata captured on the Stage 2 cold path.
+    ///
+    /// The probe distribution itself remains lock-free; this mutex is touched only
+    /// when a TLS-like port opens and a certificate is successfully parsed.
+    tls_certificates: Mutex<HashMap<u16, TlsCertificateInfo>>,
 }
 
 impl ScanController {
@@ -116,6 +125,7 @@ impl ScanController {
             summary: None,
             stealth_telemetry: None,
             formatted_report: None,
+            tls_certificates: Mutex::new(HashMap::new()),
         }
     }
 
@@ -407,6 +417,27 @@ impl ScanMediator for ScanController {
         if !self.config.grab_banners {
             return None;
         }
+
+        let host = self
+            .target
+            .as_ref()
+            .map(|target| target.raw_input.as_str())
+            .unwrap_or("localhost");
+
+        // TLS-like ports speak first only after a ClientHello. Capture certificate
+        // metadata on the same socket, keeping ScannerColleague unaware of TLS.
+        if is_tls_like_port(port) {
+            let server_name = server_name_from_input(host);
+            if let Some(certificate) =
+                inspect_tls_certificate(stream, server_name.as_deref(), self.config.banner_timeout)
+            {
+                if let Ok(mut certificates) = self.tls_certificates.lock() {
+                    certificates.insert(port, certificate);
+                }
+            }
+            return None;
+        }
+
         // Mediator delegates banner inspection to FingerprintColleague without ScannerColleague
         // ever importing or knowing about FingerprintColleague.
         let stealth = &self.config.scanner.stealth;
@@ -418,11 +449,6 @@ impl ScanMediator for ScanController {
             );
         }
 
-        let host = self
-            .target
-            .as_ref()
-            .map(|target| target.raw_input.as_str())
-            .unwrap_or("localhost");
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
@@ -436,5 +462,12 @@ impl ScanMediator for ScanController {
             host,
             seed,
         )
+    }
+
+    fn tls_certificate(&self, port: u16) -> Option<TlsCertificateInfo> {
+        self.tls_certificates
+            .lock()
+            .ok()
+            .and_then(|certificates| certificates.get(&port).cloned())
     }
 }

@@ -149,7 +149,7 @@ fn render_human_report(
         let _ = writeln!(
             out,
             "{} — {} ({}) [Scope: {}]",
-            colorize("TCPSCAN / HXSCAN v2.1 Audit Report", "1;36", c),
+            colorize("TCPSCAN / HXSCAN v2.2 Audit Report", "1;36", c),
             target.raw_input,
             target.primary_ip,
             target.scope
@@ -158,7 +158,7 @@ fn render_human_report(
         let _ = writeln!(
             out,
             "{} — {} [Scope: {}]",
-            colorize("TCPSCAN / HXSCAN v2.1 Audit Report", "1;36", c),
+            colorize("TCPSCAN / HXSCAN v2.2 Audit Report", "1;36", c),
             target.primary_ip,
             target.scope
         );
@@ -195,8 +195,8 @@ fn render_human_report(
     } else {
         let _ = writeln!(
             out,
-            "\n{:<8} {:<10} {:<10} {:<16} {:<8} {:<10} {}",
-            "Port", "State", "RTT", "Service", "Risk", "Honeypot", "Banner / Details"
+            "\n{:<8} {:<10} {:<10} {:<16} {:<18} {:<8} {:<10} {}",
+            "Port", "State", "RTT", "Service", "Version", "Risk", "Honeypot", "Banner / Details"
         );
         let _ = writeln!(out, "{subsep}");
 
@@ -205,14 +205,16 @@ fn render_human_report(
                 .rtt_ms()
                 .map(|ms| format!("{ms:.2}ms"))
                 .unwrap_or_else(|| "-".to_string());
+            let version_str = r.service_version.as_deref().unwrap_or("-");
             let detail = r.banner.as_deref().unwrap_or(r.category);
             let _ = writeln!(
                 out,
-                "{:<8} {} {:<10} {:<16} {} {} {}",
+                "{:<8} {} {:<10} {:<16} {:<18} {} {} {}",
                 r.port,
                 state_badge(&r.state, c),
                 rtt_str,
                 r.service,
+                version_str,
                 risk_badge(r.risk, c),
                 honeypot_badge(r.honeypot.verdict, c),
                 detail
@@ -225,14 +227,16 @@ fn render_human_report(
                     .rtt_ms()
                     .map(|ms| format!("{ms:.2}ms"))
                     .unwrap_or_else(|| "-".to_string());
+                let version_str = r.service_version.as_deref().unwrap_or("-");
                 let detail = r.banner.as_deref().unwrap_or(r.category);
                 let _ = writeln!(
                     out,
-                    "{:<8} {} {:<10} {:<16} {} {} {}",
+                    "{:<8} {} {:<10} {:<16} {:<18} {} {} {}",
                     r.port,
                     state_badge(&r.state, c),
                     rtt_str,
                     r.service,
+                    version_str,
                     risk_badge(r.risk, c),
                     honeypot_badge(r.honeypot.verdict, c),
                     detail
@@ -254,6 +258,48 @@ fn render_human_report(
                     "  • Port {:<5} ({}): [{}] {}",
                     r.port, r.service, r.risk, r.advisory
                 );
+            }
+        }
+    }
+
+    let tls_ports: Vec<&AuditedPortResult> = results.iter().filter(|r| r.tls.is_some()).collect();
+    if !tls_ports.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{}",
+            colorize("[TLS Certificate Intelligence]", "1;36", c)
+        );
+        for r in &tls_ports {
+            if let Some(ref tls) = r.tls {
+                let expiry = match (tls.not_after.as_deref(), tls.days_until_expiry) {
+                    (Some(date), Some(days)) => format!("{date} ({days}d)"),
+                    (Some(date), None) => date.to_string(),
+                    _ => "unknown".to_string(),
+                };
+                let sans = if tls.sans.is_empty() {
+                    "-".to_string()
+                } else {
+                    tls.sans
+                        .iter()
+                        .take(4)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let _ = writeln!(
+                    out,
+                    "  • Port {:<5} CN={} | issuer={} | expires={} | self-signed={} | SANs={} | chain={}",
+                    r.port,
+                    tls.identity(),
+                    tls.issuer_cn.as_deref().unwrap_or("-"),
+                    expiry,
+                    if tls.self_signed { "yes" } else { "no" },
+                    sans,
+                    tls.chain_length
+                );
+                if tls.hostname_mismatch {
+                    let _ = writeln!(out, "    certificate does not match the requested hostname");
+                }
             }
         }
     }
@@ -321,6 +367,13 @@ fn escape_json_str(s: &str) -> String {
     escaped
 }
 
+fn json_optional_string(value: Option<&str>) -> String {
+    match value {
+        Some(text) => format!("\"{}\"", escape_json_str(text)),
+        None => "null".to_string(),
+    }
+}
+
 fn render_json_report(
     target: &TargetInfo,
     results: &[AuditedPortResult],
@@ -331,7 +384,7 @@ fn render_json_report(
     let mut out = String::with_capacity(2048);
     let _ = writeln!(out, "{{");
     let _ = writeln!(out, "  \"scanner\": \"tcpscan-rs\",");
-    let _ = writeln!(out, "  \"version\": \"2.1.0\",");
+    let _ = writeln!(out, "  \"version\": \"2.2.0\",");
     let _ = writeln!(out, "  \"pattern\": \"Mediator\",");
     let _ = writeln!(
         out,
@@ -404,17 +457,44 @@ fn render_json_report(
             behaviors_json,
             escape_json_str(&r.honeypot.notes)
         );
+        let version_json = json_optional_string(r.service_version.as_deref());
+        let tls_json = match r.tls.as_ref() {
+            Some(tls) => {
+                let sans_json = tls
+                    .sans
+                    .iter()
+                    .map(|san| format!("\"{}\"", escape_json_str(san)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "{{ \"subject_cn\": {}, \"issuer_cn\": {}, \"sans\": [{}], \"not_after\": {}, \"days_until_expiry\": {}, \"self_signed\": {}, \"hostname_mismatch\": {}, \"chain_length\": {} }}",
+                    json_optional_string(tls.subject_cn.as_deref()),
+                    json_optional_string(tls.issuer_cn.as_deref()),
+                    sans_json,
+                    json_optional_string(tls.not_after.as_deref()),
+                    tls.days_until_expiry
+                        .map(|days| days.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    tls.self_signed,
+                    tls.hostname_mismatch,
+                    tls.chain_length
+                )
+            }
+            None => "null".to_string(),
+        };
         let _ = writeln!(
             out,
-            "    {{ \"port\": {}, \"state\": \"{}\", \"service\": \"{}\", \"risk\": \"{}\", \"category\": \"{}\", \"rtt_ms\": {}, \"banner\": {}, \"advisory\": \"{}\", \"honeypot\": {} }}{}",
+            "    {{ \"port\": {}, \"state\": \"{}\", \"service\": \"{}\", \"service_version\": {}, \"risk\": \"{}\", \"category\": \"{}\", \"rtt_ms\": {}, \"banner\": {}, \"advisory\": \"{}\", \"tls\": {}, \"honeypot\": {} }}{}",
             r.port,
             r.state.as_str(),
             escape_json_str(&r.service),
+            version_json,
             r.risk.as_str(),
             escape_json_str(r.category),
             rtt_json,
             banner_json,
             escape_json_str(&r.advisory),
+            tls_json,
             honeypot_json,
             comma
         );
@@ -448,7 +528,7 @@ pub fn sanitize_csv_cell(input: &str) -> String {
 
 fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> String {
     let mut out = String::from(
-        "target,ip,port,state,service,risk,category,rtt_ms,banner,advisory,honeypot_verdict,honeypot_score,honeypot_behaviors\n",
+        "target,ip,port,state,service,service_version,risk,category,rtt_ms,banner,advisory,tls_subject_cn,tls_issuer_cn,tls_self_signed,tls_hostname_mismatch,tls_days_until_expiry,tls_not_after,tls_sans,honeypot_verdict,honeypot_score,honeypot_behaviors\n",
     );
     for r in results {
         let rtt = r.rtt_ms().map(|ms| format!("{ms:.3}")).unwrap_or_default();
@@ -456,21 +536,61 @@ fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> Stri
         let adv_cell = sanitize_csv_cell(&r.advisory);
         let target_cell = sanitize_csv_cell(&target.raw_input);
         let service_cell = sanitize_csv_cell(&r.service);
+        let version_cell = sanitize_csv_cell(r.service_version.as_deref().unwrap_or(""));
         let category_cell = sanitize_csv_cell(r.category);
         let honeypot_behaviors = sanitize_csv_cell(&r.honeypot.behavior_summary());
+        let (tls_subject, tls_issuer, tls_self, tls_mismatch, tls_days, tls_not_after, tls_sans) =
+            match r.tls.as_ref() {
+                Some(tls) => (
+                    sanitize_csv_cell(tls.subject_cn.as_deref().unwrap_or("")),
+                    sanitize_csv_cell(tls.issuer_cn.as_deref().unwrap_or("")),
+                    if tls.self_signed {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    },
+                    if tls.hostname_mismatch {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    },
+                    tls.days_until_expiry
+                        .map(|days| days.to_string())
+                        .unwrap_or_default(),
+                    sanitize_csv_cell(tls.not_after.as_deref().unwrap_or("")),
+                    sanitize_csv_cell(&tls.sans.join("; ")),
+                ),
+                None => (
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ),
+            };
         let _ = writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             target_cell,
             target.primary_ip,
             r.port,
             r.state.as_str(),
             service_cell,
+            version_cell,
             r.risk.as_str(),
             category_cell,
             rtt,
             banner_cell,
             adv_cell,
+            tls_subject,
+            tls_issuer,
+            tls_self,
+            tls_mismatch,
+            tls_days,
+            tls_not_after,
+            tls_sans,
             r.honeypot.verdict.as_str(),
             r.honeypot.score,
             honeypot_behaviors
@@ -520,22 +640,26 @@ mod tests {
                 port: 22,
                 state: PortState::Open,
                 service: "SSH".to_string(),
+                service_version: Some("OpenSSH_9.7p1".to_string()),
                 banner: None,
                 rtt_micros: Some(400),
                 risk: RiskLevel::Low,
                 category: "Remote Access",
                 advisory: "Verify key auth".to_string(),
+                tls: None,
                 honeypot: HoneypotAssessment::clean(22),
             },
             AuditedPortResult {
                 port: 80,
                 state: PortState::Closed,
                 service: "unknown".to_string(),
+                service_version: None,
                 banner: None,
                 rtt_micros: Some(100),
                 risk: RiskLevel::None,
                 category: "Closed",
                 advisory: String::new(),
+                tls: None,
                 honeypot: HoneypotAssessment::clean(80),
             },
         ];
@@ -565,11 +689,22 @@ mod tests {
             port: 443,
             state: PortState::Open,
             service: "HTTPS".to_string(),
+            service_version: None,
             banner: None,
             rtt_micros: Some(300),
             risk: RiskLevel::Info,
             category: "TLS Encrypted Service",
             advisory: "Verify TLS".to_string(),
+            tls: Some(crate::mediator::TlsCertificateInfo {
+                subject_cn: Some("portal.example.test".to_string()),
+                issuer_cn: Some("Test CA".to_string()),
+                sans: vec!["portal.example.test".to_string()],
+                not_after: Some("301231235959Z".to_string()),
+                days_until_expiry: Some(1_000),
+                self_signed: false,
+                hostname_mismatch: false,
+                chain_length: 2,
+            }),
             honeypot: HoneypotAssessment::clean(443),
         }];
         let summary = sample_summary(1, 0);
@@ -584,5 +719,103 @@ mod tests {
         assert!(json.contains("\"port\": 443"));
         assert!(json.contains("\"service\": \"HTTPS\""));
         assert!(json.contains("\"open\": 1"));
+        assert!(json.contains("\"service_version\": null"));
+        assert!(json.contains("\"subject_cn\": \"portal.example.test\""));
+        assert!(json.contains("\"issuer_cn\": \"Test CA\""));
+        assert!(json.contains("\"days_until_expiry\": 1000"));
+        assert!(json.contains("\"self_signed\": false"));
+        assert!(json.contains("\"chain_length\": 2"));
+    }
+
+    #[test]
+    fn test_human_report_renders_tls_section_and_version_column() {
+        let target = sample_target();
+        let audited = vec![AuditedPortResult {
+            port: 443,
+            state: PortState::Open,
+            service: "HTTPS".to_string(),
+            service_version: Some("nginx/1.26.2".to_string()),
+            banner: None,
+            rtt_micros: Some(300),
+            risk: RiskLevel::Info,
+            category: "TLS Encrypted Service",
+            advisory: "Verify TLS".to_string(),
+            tls: Some(crate::mediator::TlsCertificateInfo {
+                subject_cn: Some("portal.example.test".to_string()),
+                issuer_cn: Some("Test CA".to_string()),
+                sans: vec!["portal.example.test".to_string()],
+                not_after: Some("301231235959Z".to_string()),
+                days_until_expiry: Some(1_000),
+                self_signed: true,
+                hostname_mismatch: true,
+                chain_length: 2,
+            }),
+            honeypot: HoneypotAssessment::clean(443),
+        }];
+        let summary = sample_summary(1, 0);
+        let opts = ReportOptions {
+            format: OutputFormat::Human,
+            show_closed: false,
+            use_color: false,
+        };
+        let text = render_report(
+            &target,
+            &audited,
+            &summary,
+            Duration::from_millis(12),
+            &opts,
+        );
+        assert!(text.contains("Version"));
+        assert!(text.contains("nginx/1.26.2"));
+        assert!(text.contains("[TLS Certificate Intelligence]"));
+        assert!(text.contains("portal.example.test"));
+        assert!(text.contains("self-signed=yes"));
+        assert!(text.contains("does not match the requested hostname"));
+    }
+
+    #[test]
+    fn test_csv_report_contains_tls_columns() {
+        let target = sample_target();
+        let audited = vec![AuditedPortResult {
+            port: 443,
+            state: PortState::Open,
+            service: "HTTPS".to_string(),
+            service_version: Some("nginx/1.26.2".to_string()),
+            banner: None,
+            rtt_micros: Some(300),
+            risk: RiskLevel::Info,
+            category: "TLS Encrypted Service",
+            advisory: "Verify TLS".to_string(),
+            tls: Some(crate::mediator::TlsCertificateInfo {
+                subject_cn: Some("portal.example.test".to_string()),
+                issuer_cn: Some("Test CA".to_string()),
+                sans: vec![
+                    "portal.example.test".to_string(),
+                    "www.example.test".to_string(),
+                ],
+                not_after: Some("301231235959Z".to_string()),
+                days_until_expiry: Some(1_000),
+                self_signed: false,
+                hostname_mismatch: false,
+                chain_length: 2,
+            }),
+            honeypot: HoneypotAssessment::clean(443),
+        }];
+        let summary = sample_summary(1, 0);
+        let opts = ReportOptions {
+            format: OutputFormat::Csv,
+            show_closed: false,
+            use_color: false,
+        };
+        let csv = render_report(&target, &audited, &summary, Duration::from_millis(5), &opts);
+        let header = csv.lines().next().unwrap();
+        assert!(header.contains("service_version"));
+        assert!(header.contains("tls_subject_cn"));
+        assert!(header.contains("tls_self_signed"));
+        assert!(header.contains("tls_sans"));
+        assert!(csv.contains("\"portal.example.test\""));
+        assert!(csv.contains("\"portal.example.test; www.example.test\""));
+        assert!(csv.contains(",\"nginx/1.26.2\","));
+        assert!(csv.contains(",false,false,1000,"));
     }
 }

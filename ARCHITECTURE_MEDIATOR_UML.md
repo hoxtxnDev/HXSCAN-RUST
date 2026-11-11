@@ -1,6 +1,6 @@
-# Patrón de Diseño Mediator (Mediador / Intermediary / Controller) en `tcpscan` v2.1
+# Patrón de Diseño Mediator (Mediador / Intermediary / Controller) en `tcpscan` v2.2
 
-Este documento detalla la implementación del patrón de comportamiento **Mediator (GoF)** dentro del escáner de puertos TCP de ciberseguridad `tcpscan` (`HXSCAN` Rust Edition), sus **diagramas UML** (Clases, Secuencia, Estados y Topología de Componentes), los **flujos de decisión** introducidos en la versión 2.1 (legitimidad anti-IA y clasificación de honeypots) y la **propuesta de escalabilidad óptima** hacia una plataforma SOC / Pentesting distribuida.
+Este documento detalla la implementación del patrón de comportamiento **Mediator (GoF)** dentro del escáner de puertos TCP de ciberseguridad `tcpscan` (`HXSCAN` Rust Edition), sus **diagramas UML** (Clases, Secuencia, Estados y Topología de Componentes), los **flujos de decisión** introducidos en las versiones 2.1 y 2.2 (legitimidad anti-IA, reconocimiento TLS/X.509, extracción de versión de servicio y clasificación de honeypots) y la **propuesta de escalabilidad óptima** hacia una plataforma SOC / Pentesting distribuida.
 
 ---
 
@@ -15,18 +15,19 @@ Antes de aplicar el patrón **Mediator**, las etapas de un escáner suelen acopl
 Con el patrón **Mediator** ([`src/mediator/`](src/mediator/mod.rs)):
 
 1. **Desacoplamiento Total entre Colegas (`0` imports cruzados)**:
-   Ninguno de los **6 módulos** en [`src/stages/`](src/stages/mod.rs) importa a otro módulo hermano. Todos dependen **exclusivamente** del contrato [`crate::mediator::contract`](src/mediator/contract.rs). La infraestructura transversal de cadencia y mutación vive en [`src/stealth.rs`](src/stealth.rs) y es consumida por `Stage 2`, `Stage 3` y el Mediador, sin crear dependencias entre etapas.
+   Ninguno de los **6 módulos** en [`src/stages/`](src/stages/mod.rs) importa a otro módulo hermano. Todos dependen **exclusivamente** del contrato [`crate::mediator::contract`](src/mediator/contract.rs). La infraestructura transversal de cadencia/mutación ([`src/stealth.rs`](src/stealth.rs)) y de reconocimiento TLS/X.509 ([`src/tls.rs`](src/tls.rs)) es consumida por `Stage 2`, `Stage 3` y el Mediador, sin crear dependencias entre etapas.
 2. **Topología en Estrella alrededor de `ScanController`**:
    Cada etapa actúa como un **Colega (`Colleague`)** que ejecuta su responsabilidad atómica y notifica al mediador mediante `mediator.notify(ComponentId, ScanEvent)`.
 3. **Mediación Reactiva en Tiempo Real (`MediatorDirective`)**:
    El mediador ([`ScanController`](src/mediator/controller.rs)) no es un simple pasamanos pasivo; inspecciona cada evento y toma decisiones tácticas de ciberseguridad:
    - Si `DiscoveryColleague` resuelve una IP pública (`AddressScope::Public`), emite `MediatorDirective::PublicTargetHardeningMode`.
-   - Cuando `ScannerColleague` abre un socket TCP (`SYN-ACK`), invoca `mediator.mediate_open_stream(port, &mut stream)`. El mediador decide si delegar la inspección del socket activo a `FingerprintColleague` y, en modo `stealth`/`mutable`, inyecta la **persona de tráfico** configurada sin que `ScannerColleague` sepa que `FingerprintColleague` existe.
+   - Cuando `ScannerColleague` abre un socket TCP (`SYN-ACK`), invoca `mediator.mediate_open_stream(port, &mut stream)`. En puertos TLS-like (`443`, `8443`, `6443`, etc.), el mediador negocia un `ClientHello` TLS 1.2 mínimo ([`src/tls.rs`](src/tls.rs)), extrae los metadatos del certificado X.509 y los almacena en `tls_certificates: Mutex<HashMap<u16, TlsCertificateInfo>>` (cold path; el reparto de sondas en `Stage 2` sigue siendo 100% *lock-free* con `AtomicUsize`). En el resto de puertos, delega la inspección del socket activo a `FingerprintColleague` e inyecta la **persona de tráfico** configurada sin que `ScannerColleague` conozca `FingerprintColleague` ni `tls.rs`.
+   - En `Stage 3`, `FingerprintColleague` consulta `mediator.tls_certificate(port)` para adjuntar el certificado capturado y extrae la versión del servicio (`extract_service_version`) a partir de los banners existentes, sin tráfico adicional.
    - Si `ScannerColleague` detecta puertos `Filtered` y el backoff adaptativo está activo, el mediador emite `MediatorDirective::AdaptivePacingEngaged`; en caso contrario, `FirewallDropDetected`.
-   - `HoneypotColleague` analiza el comportamiento agregado y responde con `PossibleHoneypotDetected` o `ConfirmedHoneypotDetected`, que el Mediador convierte en alertas de decepción (`deception_alerts`).
+   - `HoneypotColleague` analiza el comportamiento agregado y las anomalías del certificado TLS (`SelfSignedCertificate`, `CertificateHostnameMismatch`, `ExpiredCertificate`, `DefaultCertificateIdentity`), respondiendo con `PossibleHoneypotDetected` o `ConfirmedHoneypotDetected`, que el Mediador convierte en alertas de decepción (`deception_alerts`).
    - Si `AuditColleague` detecta un riesgo crítico (p. ej. Redis sin contraseña `+PONG` o Telnet expuesto), emite `ScanEvent::CriticalFindingDetected` al instante y el mediador registra la alerta prioritaria (`EscalateCriticalAlert`).
 4. **Escalabilidad Plug & Play demostrada**:
-   La incorporación de `HoneypotColleague` como **Stage 4** y el desplazamiento de auditoría a **Stage 5** y reportes a **Stage 6** se realizó sin reescribir la lógica interna de los colegas existentes. Solo se extendieron el contrato, el controlador, el CLI y el reporte; exactamente el tipo de evolución que el patrón busca habilitar.
+   La incorporación de `HoneypotColleague` como **Stage 4** (v2.1) y el reconocimiento TLS/X.509 + versiones de servicio (v2.2) se realizaron sin acoplar los colegas entre sí. Solo se extendieron el contrato, el controlador y las etapas consumidoras; exactamente el tipo de evolución que el patrón busca habilitar.
 
 ---
 
@@ -44,6 +45,7 @@ classDiagram
         <<interface>>
         +notify(sender: ComponentId, event: ScanEvent) MediatorDirective
         +mediate_open_stream(port: u16, stream: &mut TcpStream) Option~String~
+        +tls_certificate(port: u16) Option~TlsCertificateInfo~
     }
 
     class ScanController {
@@ -60,6 +62,7 @@ classDiagram
         -audited_results: Vec~AuditedPortResult~
         -summary: Option~SecurityPostureSummary~
         -stealth_telemetry: Option~StealthTelemetry~
+        -tls_certificates: Mutex~HashMap~u16, TlsCertificateInfo~~
         +new(config: PipelineConfig) ScanController
         +execute() Result~PipelineOutput, DiscoveryError~
         +execute_with_prober(prober: P) Result~PipelineOutput, DiscoveryError~
@@ -190,6 +193,24 @@ classDiagram
         BannerlessInteractiveService
         UnusualEphemeralService
         HoneypotPortCluster
+        SelfSignedCertificate
+        CertificateHostnameMismatch
+        ExpiredCertificate
+        DefaultCertificateIdentity
+    }
+
+    class TlsCertificateInfo {
+        <<tls intelligence>>
+        +subject_cn: Option~String~
+        +issuer_cn: Option~String~
+        +sans: Vec~String~
+        +not_after: Option~String~
+        +days_until_expiry: Option~i64~
+        +self_signed: bool
+        +hostname_mismatch: bool
+        +chain_length: usize
+        +identity() str
+        +is_expired() bool
     }
 
     class ScanEvent {
@@ -375,13 +396,14 @@ flowchart TB
 
     subgraph Shared["Infraestructura Compartida (sin acoplar etapas)"]
         ST["stealth.rs: PacingController, build_work_plan, build_http_probe, assess_legitimacy"]
+        TLS["tls.rs: inspect_tls_certificate, ClientHello TLS 1.2, parser DER/X.509"]
     end
 
     M{{"ScanController (Mediator / Intermediary)"}}
 
     subgraph Future["Nuevos Colleagues Conectables (Escalabilidad Plug & Play)"]
         F1["AsyncReactorColleague (kqueue/epoll/io_uring)"]
-        F2["TlsCertColleague (Inspección X.509, SANs y TLS 1.3)"]
+        F2["Tls13CipherAuditColleague (TLS 1.3 + auditoría de suites débiles)"]
         F3["VulnIntelColleague (Correlación CPE -> CVE / CVSS / NVD)"]
         F4["HoneypotIntelColleague (Federación de firmas y TTPs)"]
         F5["SiemWebhookColleague (Alertas Wazuh / Splunk / Slack)"]
@@ -399,6 +421,7 @@ flowchart TB
     ST -.-> C2
     ST -.-> C3
     ST -.-> M
+    TLS -.-> M
 
     M -.-> F1
     M -.-> F2
@@ -455,6 +478,7 @@ flowchart TD
     C --> C4["Banner con protocolos contradictorios"]
     C --> C5["Tarpit / latencia anómala"]
     C --> C6["Prompt de credenciales / versión legacy / puerto efímero"]
+    C --> C7["Anomalías TLS/X.509 (self-signed, mismatch, expirado, identidad default)"]
 
     B1 --> D["Score 0-100 (pesos por comportamiento)"]
     B2 --> D
@@ -466,6 +490,7 @@ flowchart TD
     C4 --> D
     C5 --> D
     C6 --> D
+    C7 --> D
 
     D --> E{"Veredicto por umbral"}
     E -->|"score menor que 30"| F["clean"]
@@ -499,10 +524,11 @@ El patrón **Mediator** convierte a `tcpscan` en una arquitectura *Event-Driven*
   - Si la tasa de *timeouts* se mantiene alta, el Mediador podría reducir dinámicamente los hilos activos y ampliar el jitter para evitar que el firewall perimetral o Fail2ban bloqueen la IP del auditor.
   - La ventaja del patrón es que esa lógica puede añadirse como un colega nuevo, sin modificar `ScannerColleague`.
 
-### 3.3. Escalabilidad de Inteligencia de Amenazas: `VulnIntelColleague` + `TlsCertColleague`
-- **Cómo funcionaría**:
-  - **Inspección TLS (`TlsCertColleague`)**: cuando `ScannerColleague` detecta abiertos los puertos `443`, `8443`, `6443`, `993` o `2376`, el Mediador enruta el stream hacia `TlsCertColleague` para extraer el certificado X.509 (`Subject`, `SANs` para descubrir subdominios ocultos, fecha de expiración y cifrados débiles).
-  - **Correlación CVE (`VulnIntelColleague`)**: se suscribe en el Mediador al evento `ScanEvent::FingerprintingCompleted`. Transforma banners como `OpenSSH_9.7p1` o `nginx/1.26.0` en identificadores **CPE 2.3** (`cpe:2.3:a:openbsd:openssh:9.7p1:*:*:*:*:*:*:*`) y consulta una base local indexada (SQLite/FST) de NVD/CISA KEV para adjuntar la lista exacta de **CVEs explotables** antes de que `AuditColleague` calcule el puntaje de riesgo.
+### 3.3. Escalabilidad de Inteligencia de Amenazas: `VulnIntelColleague` + Auditoría TLS 1.3
+- **Estado actual (v2.2)**: el reconocimiento de certificados TLS 1.2 (`Subject CN`, `Issuer CN`, `SANs`, expiración, autofirmado, mismatch de hostname y longitud de cadena) y la extracción de versiones de servicio (`extract_service_version`) ya están integrados a través de [`src/tls.rs`](src/tls.rs), `ScanController::mediate_open_stream` y `Stage 3`.
+- **Evolución futura**:
+  - **Auditoría TLS 1.3 y suites débiles (`Tls13CipherAuditColleague`)**: ampliar la inspección con soporte para certificados cifrados en TLS 1.3 y enumeración de suites obsoletas.
+  - **Correlación CVE (`VulnIntelColleague`)**: se suscribe en el Mediador al evento `ScanEvent::FingerprintingCompleted`. Transforma las versiones extraídas en `Stage 3` (como `OpenSSH_9.7p1` o `nginx/1.26.2`) en identificadores **CPE 2.3** (`cpe:2.3:a:openbsd:openssh:9.7p1:*:*:*:*:*:*:*`) y consulta una base local indexada (SQLite/FST) de NVD/CISA KEV para adjuntar la lista exacta de **CVEs explotables** antes de que `AuditColleague` calcule el puntaje de riesgo.
 
 ### 3.4. Escalabilidad de Detección de Engaño: `HoneypotIntelColleague`
 - **Problema**: las firmas locales de `HoneypotColleague` cubren frameworks conocidos, pero una red corporativa grande puede desplegar honeypots personalizados o de nueva generación.
@@ -530,9 +556,10 @@ El patrón **Mediator** convierte a `tcpscan` en una arquitectura *Event-Driven*
 
 | Garantía | Verificación |
 |----------|--------------|
-| **0 imports cruzados entre etapas** | `stage1..stage6` solo importan `crate::mediator::contract` (y `stealth` como infraestructura compartida en Stage 2/3). |
-| **Comunicación exclusiva vía Mediador** | Cada colega llama `mediator.notify(...)` o usa `mediate_open_stream(...)`; ninguno invoca a otro colega. |
-| **Estado centralizado (blackboard)** | `ScanController` mantiene `target`, `ports`, `raw_results`, `enriched_results`, `honeypot_assessments`, `audited_results`, `summary` y `stealth_telemetry`. |
+| **0 imports cruzados entre etapas** | `stage1..stage6` solo importan `crate::mediator::contract` (y `stealth`/`tls` como infraestructura compartida en Stage 2/3 y Mediador). |
+| **Comunicación exclusiva vía Mediador** | Cada colega llama `mediator.notify(...)`, `mediate_open_stream(...)` o `tls_certificate(...)`; ninguno invoca a otro colega. |
+| **Hot path Lock-Free** | El reparto de puertos en `Stage 2` usa `AtomicUsize` + buffers por hilo sin `Mutex`; `ScanController` solo usa un `Mutex<HashMap<u16, TlsCertificateInfo>>` en el cold path cuando un puerto TLS abierto entrega un certificado. |
+| **Estado centralizado (blackboard)** | `ScanController` mantiene `target`, `ports`, `raw_results`, `enriched_results`, `honeypot_assessments`, `audited_results`, `summary`, `stealth_telemetry` y `tls_certificates`. |
 | **Trazabilidad auditable** | `event_trace` registra emisor, nombre de evento, estado resultante y directiva emitida. |
-| **Escalabilidad plug-and-play** | `HoneypotColleague` se añadió como Stage 4 sin modificar la lógica interna de los colegas existentes; auditoría y reporte se renumeraron a Stage 5 y Stage 6. |
+| **Escalabilidad plug-and-play** | `HoneypotColleague` (v2.1) y el reconocimiento TLS/X.509 + versiones de servicio (v2.2) se integraron sin acoplar colegas entre sí. |
 | **Seguridad de memoria** | `#![forbid(unsafe_code)]` en todos los targets; sin dependencias externas. |

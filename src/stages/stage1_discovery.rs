@@ -296,9 +296,31 @@ impl PortBitmap {
 
     #[inline]
     fn insert_range(&mut self, start: u16, end: u16) {
-        for p in start..=end {
-            self.insert(p);
+        let start_word = (start as usize) >> 6;
+        let end_word = (end as usize) >> 6;
+        let start_bit = (start as usize) & 63;
+        let end_bit = (end as usize) & 63;
+
+        if start_word == end_word {
+            let mask = (u64::MAX << start_bit) & (u64::MAX >> (63 - end_bit));
+            let added = (mask & !self.bits[start_word]).count_ones() as usize;
+            self.bits[start_word] |= mask;
+            self.count += added;
+            return;
         }
+
+        let first_mask = u64::MAX << start_bit;
+        self.count += (first_mask & !self.bits[start_word]).count_ones() as usize;
+        self.bits[start_word] |= first_mask;
+
+        for word in &mut self.bits[(start_word + 1)..end_word] {
+            self.count += (!*word).count_ones() as usize;
+            *word = u64::MAX;
+        }
+
+        let last_mask = u64::MAX >> (63 - end_bit);
+        self.count += (last_mask & !self.bits[end_word]).count_ones() as usize;
+        self.bits[end_word] |= last_mask;
     }
 
     fn into_sorted_vec(self) -> Vec<u16> {

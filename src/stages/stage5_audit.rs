@@ -32,9 +32,8 @@ impl AuditColleague {
             .map(|t| t.scope)
             .unwrap_or(AddressScope::Private);
         let enriched = std::mem::take(&mut mediator.enriched_results);
-        let honeypots = mediator.honeypot_assessments.clone();
         let (audited_results, summary) =
-            execute_audit_stage_with_honeypots(enriched, scope, &honeypots);
+            execute_audit_stage_with_honeypots(enriched, scope, &mediator.honeypot_assessments);
 
         // Notify the Mediator immediately for each critical security finding
         for item in &audited_results {
@@ -87,11 +86,13 @@ pub fn evaluate_port_security_with_honeypot(
             port: item.port,
             state: item.state,
             service: item.service,
+            service_version: item.service_version,
             banner: item.banner,
             rtt_micros: item.rtt_micros,
             risk: RiskLevel::None,
             category,
             advisory,
+            tls: item.tls,
             honeypot,
         };
     }
@@ -123,15 +124,29 @@ pub fn evaluate_port_security_with_honeypot(
         }
     }
 
+    if let Some(ref tls) = item.tls {
+        if tls.self_signed {
+            advisory.push_str(" [self-signed certificate]");
+        }
+        if tls.hostname_mismatch {
+            advisory.push_str(" [certificate/hostname mismatch]");
+        }
+        if tls.is_expired() {
+            advisory.push_str(" [expired certificate]");
+        }
+    }
+
     AuditedPortResult {
         port: item.port,
         state: item.state,
         service: item.service,
+        service_version: item.service_version,
         banner: item.banner,
         rtt_micros: item.rtt_micros,
         risk,
         category,
         advisory,
+        tls: item.tls,
         honeypot,
     }
 }
@@ -202,7 +217,7 @@ fn classify_open_port(port: u16, service: &str) -> (RiskLevel, &'static str, Str
             "Cleartext protocol; enforce STARTTLS or migrate to implicit TLS (465/993/995/636)"
                 .to_string(),
         ),
-        443 | 465 | 636 | 993 | 995 | 2376 | 5986 | 6443 | 8443 => (
+        443 | 465 | 636 | 853 | 993 | 995 | 2376 | 5986 | 6443 | 8443 | 8883 | 9443 => (
             RiskLevel::Info,
             "TLS Encrypted Service",
             "Verify TLS 1.2+/1.3 cipher suites, certificate validity, and endpoint authentication"
@@ -268,11 +283,24 @@ pub fn execute_audit_stage_with_honeypots(
 
     let audited: Vec<AuditedPortResult> = enriched
         .into_iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(idx, item)| {
             let assessment = honeypots
-                .iter()
-                .find(|assessment| assessment.port == item.port)
+                .get(idx)
+                .filter(|assessment| assessment.port == item.port)
                 .cloned()
+                .or_else(|| {
+                    honeypots
+                        .binary_search_by_key(&item.port, |assessment| assessment.port)
+                        .ok()
+                        .map(|pos| honeypots[pos].clone())
+                })
+                .or_else(|| {
+                    honeypots
+                        .iter()
+                        .find(|assessment| assessment.port == item.port)
+                        .cloned()
+                })
                 .unwrap_or_else(|| HoneypotAssessment::clean(item.port));
             let res = evaluate_port_security_with_honeypot(item, scope, assessment);
             match res.state {
@@ -341,8 +369,10 @@ mod tests {
             port: 23,
             state: PortState::Open,
             service: "Telnet".to_string(),
+            service_version: None,
             banner: None,
             rtt_micros: None,
+            tls: None,
         };
         let audited = evaluate_port_security(telnet, AddressScope::Private);
         assert_eq!(audited.risk, RiskLevel::Critical);
@@ -351,8 +381,10 @@ mod tests {
             port: 2375,
             state: PortState::Open,
             service: "Docker-API".to_string(),
+            service_version: None,
             banner: None,
             rtt_micros: None,
+            tls: None,
         };
         let audited_docker = evaluate_port_security(docker, AddressScope::Loopback);
         assert_eq!(audited_docker.risk, RiskLevel::Critical);
@@ -364,8 +396,10 @@ mod tests {
             port: 3389,
             state: PortState::Open,
             service: "RDP".to_string(),
+            service_version: None,
             banner: None,
             rtt_micros: None,
+            tls: None,
         };
         let private_eval = evaluate_port_security(rdp.clone(), AddressScope::Private);
         assert_eq!(private_eval.risk, RiskLevel::High);
@@ -381,8 +415,10 @@ mod tests {
             port: 6379,
             state: PortState::Open,
             service: "Redis".to_string(),
+            service_version: None,
             banner: Some("+PONG".to_string()),
             rtt_micros: None,
+            tls: None,
         };
         let audited = evaluate_port_security(redis, AddressScope::Loopback);
         assert_eq!(audited.risk, RiskLevel::Critical);
@@ -396,22 +432,28 @@ mod tests {
                 port: 443,
                 state: PortState::Open,
                 service: "HTTPS".to_string(),
+                service_version: None,
                 banner: None,
                 rtt_micros: None,
+                tls: None,
             },
             EnrichedPortResult {
                 port: 80,
                 state: PortState::Closed,
                 service: "unknown".to_string(),
+                service_version: None,
                 banner: None,
                 rtt_micros: None,
+                tls: None,
             },
             EnrichedPortResult {
                 port: 8080,
                 state: PortState::Filtered,
                 service: "unknown".to_string(),
+                service_version: None,
                 banner: None,
                 rtt_micros: None,
+                tls: None,
             },
         ];
         let (_, summary) = execute_audit_stage(items, AddressScope::Private);

@@ -145,8 +145,14 @@ impl PacingController {
 /// decoys are inserted at random positions and their results are discarded by the
 /// scanner. Decoy traffic never leaves the primary target.
 pub fn build_work_plan(ports: &[u16], decoy_probes: usize, seed: u64) -> Vec<(u16, bool)> {
-    let mut plan: Vec<(u16, bool)> = ports.iter().map(|&port| (port, false)).collect();
-    if ports.is_empty() || decoy_probes == 0 {
+    let capped_decoys = if ports.is_empty() {
+        0
+    } else {
+        decoy_probes.min(MAX_DECOY_PROBES)
+    };
+    let mut plan: Vec<(u16, bool)> = Vec::with_capacity(ports.len() + capped_decoys);
+    plan.extend(ports.iter().map(|&port| (port, false)));
+    if capped_decoys == 0 {
         return plan;
     }
 
@@ -155,7 +161,7 @@ pub fn build_work_plan(ports: &[u16], decoy_probes: usize, seed: u64) -> Vec<(u1
     } else {
         seed
     };
-    for _ in 0..decoy_probes.min(MAX_DECOY_PROBES) {
+    for _ in 0..capped_decoys {
         let decoy_port = DECOY_POOL[(next_rand(&mut rng) as usize) % DECOY_POOL.len()];
         let position = (next_rand(&mut rng) as usize) % (plan.len() + 1);
         plan.insert(position, (decoy_port, true));

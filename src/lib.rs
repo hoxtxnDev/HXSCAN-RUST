@@ -1,8 +1,18 @@
-//! # `tcpscan` (HXSCAN-RUST v2.1 — Mediator Pattern Architecture)
+//! # `tcpscan` (HXSCAN-RUST v2.2 — Mediator Pattern Architecture)
 //!
 //! High-performance, zero-dependency, staged modular TCP port scanner and
 //! cybersecurity auditing toolkit built around the **Mediator Design Pattern**
 //! (also known as *Intermediary* or *Controller*).
+//!
+//! ## v2.2 Highlights
+//! - **TLS certificate reconnaissance**: minimal TLS 1.2 `ClientHello` exchange that
+//!   retrieves the leaf certificate without completing the handshake or decrypting traffic.
+//! - **X.509 intelligence**: subject/issuer CN, DNS SANs, expiry, self-signed heuristic,
+//!   hostname mismatch and advertised chain length in human, JSON and CSV reports.
+//! - **Service version extraction**: product versions parsed from SSH, HTTP, FTP, SMTP,
+//!   MySQL and Redis banners and attached to every open port.
+//! - **Certificate-backed deception signals**: self-signed, mismatched, expired and
+//!   default-identity certificates contribute explainable honeypot evidence.
 //!
 //! ## v2.1 Highlights
 //! - **Stealth mode**: jittered, rate-capped, shuffled probes with adaptive backoff.
@@ -28,6 +38,7 @@ pub mod cli;
 pub mod mediator;
 pub mod stages;
 pub mod stealth;
+pub mod tls;
 
 pub use cli::{
     parse_cli_args, CliAction, ScanProfile, MAX_BURST_PAUSE_MS, MAX_BURST_SIZE, MAX_DECOY_PROBES,
@@ -39,7 +50,7 @@ pub use mediator::{
     HoneypotBehavior, HoneypotVerdict, MediatedEventRecord, MediatorDirective, MediatorState,
     OutputFormat, PipelineConfig, PipelineOutput, PortState, RawProbeResult, ReportOptions,
     RiskLevel, ScanController, ScanEvent, ScanMediator, ScannerConfig, SecurityPostureSummary,
-    StealthConfig, StealthMode, StealthTelemetry, TargetInfo, TrafficPersona,
+    StealthConfig, StealthMode, StealthTelemetry, TargetInfo, TlsCertificateInfo, TrafficPersona,
 };
 pub use stages::stage1_discovery::{
     parse_port_spec, resolve_target, shuffle_ports, validate_ip_safety, DiscoveryColleague,

@@ -104,7 +104,7 @@ pub enum CliAction {
 
 /// Return the formatted CLI help text.
 pub fn help_text() -> String {
-    r#"tcpscan (HXSCAN-RUST v2.1) — Staged Mediator TCP Port Scanner & Cybersecurity Auditor
+    r#"tcpscan (HXSCAN-RUST v2.2) — Staged Mediator TCP Port Scanner & Cybersecurity Auditor
 
 USAGE:
   tcpscan <target> [ports] [OPTIONS]
@@ -345,7 +345,7 @@ where
             "-h" | "--help" => return Ok(CliAction::ShowHelp(help_text())),
             "-V" | "--version" => {
                 return Ok(CliAction::ShowVersion(
-                    "tcpscan 2.1.0 (HXSCAN-RUST Edition)".to_string(),
+                    "tcpscan 2.2.0 (HXSCAN-RUST Edition)".to_string(),
                 ))
             }
             "-t" | "--target" => {

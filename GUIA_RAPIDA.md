@@ -1,4 +1,4 @@
-# Guía rápida de `tcpscan` (HXSCAN-RUST v2.1)
+# Guía rápida de `tcpscan` (HXSCAN-RUST v2.2)
 
 > ⚠️ **Solo para auditorías autorizadas.** Usa esta herramienta únicamente contra sistemas propios o con autorización escrita explícita. Los modos `stealth`/`mutable` reducen firmas de escaneo, pero **no garantizan** evadir IDS/IPS, EDR o sistemas de IA. Consulta [`SECURITY.md`](SECURITY.md).
 
@@ -29,7 +29,7 @@ El binario queda en `target/release/tcpscan` (en Windows, `target\release\tcpsca
 ./tcpscan 192.168.1.10:8080
 ```
 
-La salida muestra una tabla con estado, RTT, servicio, riesgo, veredicto de honeypot y banner.
+La salida muestra una tabla con estado, RTT, servicio, **versión**, riesgo, veredicto de honeypot y banner. En puertos TLS aparece además la sección `[TLS Certificate Intelligence]`.
 
 ---
 
@@ -45,6 +45,7 @@ La salida muestra una tabla con estado, RTT, servicio, riesgo, veredicto de hone
 | Persona concreta | `./tcpscan 10.0.0.5 --mutable --persona windows-update` |
 | Salida JSON para SIEM | `./tcpscan 10.0.0.5 --json` |
 | Salida CSV para Excel | `./tcpscan 10.0.0.5 --csv` |
+| Inspeccionar certificado TLS | `./tcpscan 10.0.0.5 443,8443 --profile audit` |
 | Bloquear escaneo a loopback | `./tcpscan 10.0.0.5 --protect-origin` |
 | Ajuste fino de sigilo | `./tcpscan 10.0.0.5 --stealth --jitter-ms 150 --max-pps 3 --burst 1 --burst-pause-ms 900` |
 | Verbose del Mediador | `./tcpscan 10.0.0.5 -v` |
@@ -81,7 +82,15 @@ Ejemplo de camuflaje con ajuste fino:
 
 - **State**: `open` (servicio alcanzable), `closed` (RST), `filtered` (firewall/ACL) o `error`.
 - **RTT**: latencia del handshake TCP en milisegundos.
+- **Version**: producto/versión extraída del banner (`OpenSSH_9.7p1`, `nginx/1.26.2`, etc.).
 - **Risk**: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO` o `NONE`, según exposición y contexto.
+- **TLS Certificate Intelligence** (puertos TLS):
+  - **CN / issuer**: identidad del certificado y emisor.
+  - **expires**: fecha `notAfter` y días restantes (negativo = expirado).
+  - **self-signed**: `yes` cuando subject e issuer coinciden.
+  - **SANs**: nombres DNS cubiertos.
+  - **chain**: número de certificados anunciados.
+  - Un **mismatch de hostname** se marca explícitamente bajo el puerto.
 - **Honeypot**:
   - `clean`: sin señales relevantes.
   - `POSSIBLE`: señales débiles/medias; corrobora antes de interactuar.

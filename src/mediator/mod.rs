@@ -1,7 +1,7 @@
 //! # Mediator Pattern Module (`src/mediator`)
 //!
 //! Implements the **Mediator Design Pattern** (also known as *Intermediary* or *Controller*)
-//! to decouple all 5 cybersecurity scanning stages into independent Colleagues.
+//! to decouple all 6 cybersecurity scanning stages into independent Colleagues.
 
 pub mod contract;
 pub mod controller;
@@ -11,6 +11,6 @@ pub use contract::{
     HoneypotBehavior, HoneypotVerdict, MediatedEventRecord, MediatorDirective, MediatorState,
     OutputFormat, PortState, RawProbeResult, ReportOptions, RiskLevel, ScanEvent, ScanMediator,
     ScannerConfig, SecurityPostureSummary, StealthConfig, StealthMode, StealthTelemetry,
-    TargetInfo, TrafficPersona,
+    TargetInfo, TlsCertificateInfo, TrafficPersona,
 };
 pub use controller::{PipelineConfig, PipelineOutput, ScanController};
