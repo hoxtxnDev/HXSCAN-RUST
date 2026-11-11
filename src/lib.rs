@@ -103,3 +103,156 @@ where
         Err(err_msg) => (1, String::new(), format!("[!] {err_msg}\n")),
     }
 }
+
+/// Split an interactive command line into tokens, supporting quoted strings and stripping
+/// an optional leading `tcpscan` / `hxscan` / `./tcpscan` command prefix.
+pub fn parse_interactive_line(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quote: Option<char> = None;
+
+    for ch in line.trim().chars() {
+        match in_quote {
+            Some(q) if ch == q => {
+                in_quote = None;
+            }
+            Some(_) => current.push(ch),
+            None if ch == '"' || ch == '\'' => {
+                in_quote = Some(ch);
+            }
+            None if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    if let Some(first) = tokens.first().map(|s| s.to_ascii_lowercase()) {
+        if matches!(
+            first.as_str(),
+            "tcpscan" | "tcpscan.exe" | "./tcpscan" | ".\\tcpscan.exe" | "hxscan" | "hxscan.exe"
+        ) {
+            tokens.remove(0);
+        }
+    }
+
+    tokens
+}
+
+/// Interactive console mode launched when `tcpscan.exe` is opened without arguments
+/// (e.g. double-clicked on Windows Explorer) so the terminal window stays open.
+pub fn run_interactive_shell() -> i32 {
+    use std::io::{self, BufRead, Write};
+
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    let stdin = io::stdin();
+
+    let banner = "\
+==============================================================================
+  TCPSCAN / HXSCAN-RUST v2.2.0 — Interactive Console Mode (Mediator Pattern)
+==============================================================================
+  Authorized security auditing only. Type a target or command below:
+
+  Examples:
+    127.0.0.1                           (Scan default critical ports on localhost)
+    127.0.0.1 22,80,135,443,445 -v      (Scan specific ports with Mediator trace)
+    scanme.nmap.org 22,80,443           (Scan official Nmap public test host)
+    example.com:443                     (Inspect TLS 1.2 / X.509 certificate)
+    10.0.0.1 --stealth                  (Low-noise jittered scan)
+    10.0.0.1 --mutable                  (Corporate workstation persona)
+    help                                (Show full CLI flags & options)
+    exit                                (Close console)
+------------------------------------------------------------------------------
+";
+    let _ = stdout.write_all(banner.as_bytes());
+    let _ = stdout.flush();
+
+    let mut last_exit_code = 0;
+    let mut reader = stdin.lock();
+    let mut line = String::new();
+
+    loop {
+        let _ = stdout.write_all(b"\ntcpscan> ");
+        let _ = stdout.flush();
+
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Ok(_) => {}
+            Err(_) => break,
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        match trimmed.to_ascii_lowercase().as_str() {
+            "exit" | "quit" | "q" | "salir" => break,
+            "help" | "ayuda" | "?" => {
+                let (_, help_out, _) = run_from_args(["--help"]);
+                let _ = stdout.write_all(help_out.as_bytes());
+                let _ = stdout.flush();
+                continue;
+            }
+            "version" | "ver" => {
+                let (_, ver_out, _) = run_from_args(["--version"]);
+                let _ = stdout.write_all(ver_out.as_bytes());
+                let _ = stdout.flush();
+                continue;
+            }
+            "cls" | "clear" => {
+                let _ = stdout.write_all(b"\x1b[2J\x1b[H");
+                let _ = stdout.flush();
+                continue;
+            }
+            _ => {}
+        }
+
+        let tokens = parse_interactive_line(trimmed);
+        if tokens.is_empty() {
+            continue;
+        }
+
+        let (code, out_str, err_str) = run_from_args(&tokens);
+        last_exit_code = code;
+
+        if !err_str.is_empty() {
+            let _ = stderr.write_all(err_str.as_bytes());
+            let _ = stderr.flush();
+        }
+        if !out_str.is_empty() {
+            let _ = stdout.write_all(out_str.as_bytes());
+            let _ = stdout.flush();
+        }
+    }
+
+    last_exit_code
+}
+
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_interactive_line_handles_prefixes_and_quotes() {
+        assert_eq!(
+            parse_interactive_line("127.0.0.1 22,80,443 --stealth"),
+            vec!["127.0.0.1", "22,80,443", "--stealth"]
+        );
+        assert_eq!(
+            parse_interactive_line("tcpscan 10.0.0.1 -p \"22, 80, 443\""),
+            vec!["10.0.0.1", "-p", "22, 80, 443"]
+        );
+        assert_eq!(
+            parse_interactive_line("hxscan.exe scanme.nmap.org"),
+            vec!["scanme.nmap.org"]
+        );
+    }
+}

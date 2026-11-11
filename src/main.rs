@@ -2,11 +2,16 @@
 #![forbid(unsafe_code)]
 
 use std::env;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process;
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+
+    if args.is_empty() && io::stdin().is_terminal() {
+        process::exit(tcpscan::run_interactive_shell());
+    }
+
     let (exit_code, stdout_str, stderr_str) = tcpscan::run_from_args(&args);
 
     if !stderr_str.is_empty() {
