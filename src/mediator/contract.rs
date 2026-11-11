@@ -81,8 +81,19 @@ pub enum AddressScope {
 
 impl AddressScope {
     /// Classify an [`IpAddr`] into its [`AddressScope`].
+    ///
+    /// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are canonicalized to IPv4 first
+    /// so `::ffff:127.0.0.1` and `::ffff:169.254.169.254` cannot bypass loopback or
+    /// link-local origin protection checks.
     pub fn from_ip(ip: IpAddr) -> Self {
-        match ip {
+        let canonical = match ip {
+            IpAddr::V4(v4) => IpAddr::V4(v4),
+            IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+                Some(v4) => IpAddr::V4(v4),
+                None => IpAddr::V6(v6),
+            },
+        };
+        match canonical {
             IpAddr::V4(v4) => {
                 if v4.is_loopback() {
                     Self::Loopback

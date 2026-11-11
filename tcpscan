@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Hardened zero-friction launcher for `tcpscan` (HXSCAN-RUST v2.1).
+# Hardened zero-friction launcher for `tcpscan` (HXSCAN-RUST v3.0.0).
 # Protects against environment variable / CDPATH / IFS injection and executes the compiled binary.
 
 set -eu

@@ -329,7 +329,7 @@ Metadatos extraídos:
 | `subject_cn` / `issuer_cn` | Identidad del servicio y emisor |
 | `sans` | Nombres DNS cubiertos (máx. 16) |
 | `not_after` / `days_until_expiry` | Vigencia y días restantes (negativos = expirado) |
-| `self_signed` | `subject == issuer` (heurística) |
+| `self_signed` | `issuer.raw == subject.raw` (comparación ASN.1 DER exacta de Distinguished Name) |
 | `hostname_mismatch` | El certificado no cubre el hostname solicitado |
 | `chain_length` | Nº de certificados anunciados por el servidor |
 
@@ -403,7 +403,7 @@ El reporte JSON incluye bloques `stealth`, `summary`, `tls` y `honeypot` para au
 ```json
 {
   "scanner": "tcpscan-rs",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "pattern": "Mediator",
   "stealth": {
     "mode": "mutable",
@@ -454,8 +454,8 @@ El CSV incorpora `service_version` y siete columnas TLS (`tls_subject_cn`, `tls_
 cargo test
 ```
 
-Incluye **87 pruebas automatizadas**:
-- **73 pruebas unitarias** distribuidas en cada etapa, `cli.rs`, `stealth.rs` y `tls.rs` (`PortBitmap` de 65,535 puertos, `--top-ports`, `--exclude-ports`, expansión CIDR `/22..=/32` y rangos IP, clasificación de alcance IP, bloqueo de DNS Rebinding y `0.0.0.0`, distribución multihilo *lock-free*, `MockStream` para sondas HTTP/Redis/SSH, mutación de cabeceras por persona, pacing adaptativo, jitter, decoys, sanitización ANSI CSI/OSC, protección CSV CWE-1236, generación **CPE 2.3**, correlación pasiva de **CVEs**, inferencia pasiva de SO (`OS Hint`), **síntesis híbrida de rol de host, detección de DNAT/Reverse-Proxy RTT Split, extracción de Shadow Assets desde SANs/banners y combinaciones tóxicas multi-puerto**, comando `--nmap-cmd` filtrado contra honeypots, firmas y señales agregadas de honeypot, **parser DER/X.509, SNI, SAN, wildcard matching, expiración, self-signed y ClientHello TLS 1.2**, extracción de versiones y formatos de reporte).
+Incluye **95 pruebas automatizadas**:
+- **81 pruebas unitarias** distribuidas en cada etapa, `cli.rs`, `stealth.rs` y `tls.rs` (`PortBitmap` de 65,535 puertos, `--top-ports`, `--exclude-ports`, expansión CIDR `/22..=/32` y rangos IP, clasificación de alcance IP, bloqueo de DNS Rebinding e IPv6 mapeado a IPv4 (`::ffff:127.0.0.1`, `::ffff:169.254.169.254`, `0.0.0.0`), distribución multihilo *lock-free*, `MockStream` para sondas HTTP/Redis/SSH y modo `--ghost` de 0 bytes, mutación de cabeceras por persona, pacing adaptativo, jitter, decoys, sanitización ANSI CSI/OSC y filtrado Unicode Bidi (`U+202E`), protección CSV CWE-1236, generación **CPE 2.3**, correlación pasiva de **CVEs**, inferencia pasiva de SO (`OS Hint`), **síntesis híbrida de rol de host, detección de DNAT/Reverse-Proxy RTT Split, extracción de Shadow Assets desde SANs/banners y combinaciones tóxicas multi-puerto**, comando `--nmap-cmd` filtrado contra honeypots, firmas y señales agregadas de honeypot, **parser DER/X.509, deadline total anti-tarpit TLS, suites ECDSA/ChaCha20, SNI, SAN, wildcard matching, expiración, self-signed DER exacto y ClientHello TLS 1.2**, extracción de versiones y formatos de reporte bilingüe ES/EN).
 - **14 pruebas de integración** en [`tests/pipeline_integration.rs`](tests/pipeline_integration.rs) verificando la traza cronológica del **Mediator** (`event_trace`), directivas reactivas (`PublicTargetHardeningMode`, `FirewallDropDetected`, `AdaptivePacingEngaged`, `PossibleHoneypotDetected`, `ConfirmedHoneypotDetected`, `EscalateCriticalAlert`), auditoría agresiva `-A` con CPE/CVE y filtrado anti-honeypot para Nmap, **síntesis Hybrid Recon end-to-end**, telemetría `mutable`, clasificación de honeypots, bloqueo `--protect-origin`, **captura TLS end-to-end contra un servidor loopback instrumentado**, sockets y códigos de salida (`0`, `1`, `2`).
 
 ---

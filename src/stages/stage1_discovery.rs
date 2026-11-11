@@ -14,6 +14,7 @@
 //! **Decoupling Guarantee**: This module has zero imports from `stage2`, `stage3`, `stage4`, or `stage5`.
 
 use std::fmt;
+use std::io::{BufRead, BufReader, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 
 use crate::mediator::{
@@ -145,6 +146,19 @@ impl DiscoveryColleague {
     }
 }
 
+/// Canonicalize IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) to their underlying IPv4 address
+/// so origin protection, loopback/link-local detection, and anti-rebinding checks cannot be bypassed.
+#[inline]
+pub fn canonicalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(v6),
+        },
+    }
+}
+
 /// Validate that an IP address does not endanger the originating host (e.g. `0.0.0.0` self-connect,
 /// broadcast storm, multicast, or DNS Rebinding from an external hostname to `127.0.0.1` / `169.254.x.x`).
 pub fn validate_ip_safety(
@@ -152,7 +166,8 @@ pub fn validate_ip_safety(
     raw_host: &str,
     was_dns_resolved: bool,
 ) -> Result<(), DiscoveryError> {
-    match ip {
+    let canonical = canonicalize_ip(ip);
+    match canonical {
         IpAddr::V4(v4) => {
             if v4.is_unspecified() {
                 return Err(DiscoveryError::UnsafeTargetAddress(
@@ -193,11 +208,11 @@ pub fn validate_ip_safety(
             || lower.ends_with(".localhost");
 
         if !is_explicit_localhost {
-            let scope = AddressScope::from_ip(ip);
+            let scope = AddressScope::from_ip(canonical);
             if matches!(scope, AddressScope::Loopback | AddressScope::LinkLocal) {
                 return Err(DiscoveryError::DnsRebindingDetected {
                     domain: raw_host.to_string(),
-                    resolved_ip: ip,
+                    resolved_ip: canonical,
                 });
             }
         }
@@ -252,7 +267,8 @@ pub fn resolve_target(target: &str) -> Result<TargetInfo, DiscoveryError> {
     }
 
     // Fast path: direct IP literal
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    if let Ok(parsed_ip) = host.parse::<IpAddr>() {
+        let ip = canonicalize_ip(parsed_ip);
         validate_ip_safety(ip, host, false)?;
         return Ok(TargetInfo {
             raw_input: host.to_string(),
@@ -269,7 +285,7 @@ pub fn resolve_target(target: &str) -> Result<TargetInfo, DiscoveryError> {
 
     let mut all_ips: Vec<IpAddr> = Vec::new();
     for sock_addr in addrs_iter {
-        let ip = sock_addr.ip();
+        let ip = canonicalize_ip(sock_addr.ip());
         validate_ip_safety(ip, host, true)?;
         if !all_ips.contains(&ip) {
             all_ips.push(ip);
@@ -529,44 +545,47 @@ pub fn expand_target_inputs(
     target_input: &str,
     input_file: Option<&str>,
 ) -> Result<Vec<String>, DiscoveryError> {
-    let mut raw_tokens: Vec<String> = Vec::new();
+    let mut expanded: Vec<String> = Vec::new();
 
     for part in target_input.split(',') {
         let trimmed = part.trim();
         if !trimmed.is_empty() {
-            raw_tokens.push(trimmed.to_string());
+            expand_single_target_token(trimmed, &mut expanded)?;
+            if expanded.len() > MAX_MULTI_TARGETS {
+                return Err(DiscoveryError::InvalidPortSpec(format!(
+                    "Target expansion exceeds MAX_MULTI_TARGETS ({MAX_MULTI_TARGETS}) for Origin Host Resource Protection"
+                )));
+            }
         }
     }
 
     if let Some(path) = input_file {
-        let content = std::fs::read_to_string(path).map_err(|e| {
+        // Bound the file reader to 1 MiB and expand line-by-line so an oversized file
+        // is rejected as soon as `MAX_MULTI_TARGETS` is exceeded without loading it into memory.
+        const MAX_TARGET_FILE_BYTES: u64 = 1024 * 1024;
+        let file = std::fs::File::open(path).map_err(|e| {
             DiscoveryError::InvalidPortSpec(format!("Failed to read target list '{path}': {e}"))
         })?;
-        for line in content.lines() {
-            let line = line.split('#').next().unwrap_or("").trim();
+        let reader = BufReader::new(file.take(MAX_TARGET_FILE_BYTES));
+        for line_res in reader.lines() {
+            let raw_line = line_res.map_err(|e| {
+                DiscoveryError::InvalidPortSpec(format!("Failed to read target list '{path}': {e}"))
+            })?;
+            let line = raw_line.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
                 continue;
             }
             for part in line.split(|c: char| c == ',' || c.is_whitespace()) {
                 let trimmed = part.trim();
                 if !trimmed.is_empty() {
-                    raw_tokens.push(trimmed.to_string());
+                    expand_single_target_token(trimmed, &mut expanded)?;
+                    if expanded.len() > MAX_MULTI_TARGETS {
+                        return Err(DiscoveryError::InvalidPortSpec(format!(
+                            "Target expansion exceeds MAX_MULTI_TARGETS ({MAX_MULTI_TARGETS}) for Origin Host Resource Protection"
+                        )));
+                    }
                 }
             }
-        }
-    }
-
-    if raw_tokens.is_empty() {
-        return Err(DiscoveryError::EmptyTarget);
-    }
-
-    let mut expanded: Vec<String> = Vec::new();
-    for token in raw_tokens {
-        expand_single_target_token(&token, &mut expanded)?;
-        if expanded.len() > MAX_MULTI_TARGETS {
-            return Err(DiscoveryError::InvalidPortSpec(format!(
-                "Target expansion exceeds MAX_MULTI_TARGETS ({MAX_MULTI_TARGETS}) for Origin Host Resource Protection"
-            )));
         }
     }
 
@@ -889,5 +908,47 @@ mod tests {
 
         // Too-wide CIDR (/16 > 1024 hosts) must be rejected safely
         assert!(expand_target_inputs("10.0.0.0/16", None).is_err());
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ipv6_addresses_canonicalized_and_blocked() {
+        // ::ffff:127.0.0.1 and ::ffff:169.254.169.254 must NOT be classified as Public
+        let mapped_loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        let mapped_metadata: IpAddr = "::ffff:169.254.169.254".parse().unwrap();
+        let mapped_private: IpAddr = "::ffff:192.168.1.10".parse().unwrap();
+
+        assert_eq!(
+            AddressScope::from_ip(mapped_loopback),
+            AddressScope::Loopback
+        );
+        assert_eq!(
+            AddressScope::from_ip(mapped_metadata),
+            AddressScope::LinkLocal
+        );
+        assert_eq!(AddressScope::from_ip(mapped_private), AddressScope::Private);
+
+        // DNS Rebinding via IPv4-mapped IPv6 must be blocked
+        assert!(matches!(
+            validate_ip_safety(mapped_loopback, "rebind-v6.attacker.com", true),
+            Err(DiscoveryError::DnsRebindingDetected { .. })
+        ));
+        assert!(matches!(
+            validate_ip_safety(mapped_metadata, "ssrf-v6.attacker.com", true),
+            Err(DiscoveryError::DnsRebindingDetected { .. })
+        ));
+
+        // Unsafe IPv4 addresses wrapped in ::ffff: must also be blocked
+        assert!(matches!(
+            resolve_target("::ffff:0.0.0.0"),
+            Err(DiscoveryError::UnsafeTargetAddress(_))
+        ));
+        assert!(matches!(
+            resolve_target("::ffff:255.255.255.255"),
+            Err(DiscoveryError::UnsafeTargetAddress(_))
+        ));
+        assert!(matches!(
+            resolve_target("::ffff:224.0.0.1"),
+            Err(DiscoveryError::UnsafeTargetAddress(_))
+        ));
     }
 }
