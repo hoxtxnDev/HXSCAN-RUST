@@ -194,9 +194,10 @@ pub fn parse_interactive_line(line: &str) -> Vec<String> {
     }
 
     if let Some(first) = tokens.first().map(|s| s.to_ascii_lowercase()) {
+        let basename = first.rsplit(&['/', '\\'][..]).next().unwrap_or(&first);
         if matches!(
-            first.as_str(),
-            "tcpscan" | "tcpscan.exe" | "./tcpscan" | ".\\tcpscan.exe" | "hxscan" | "hxscan.exe"
+            basename,
+            "tcpscan" | "tcpscan.exe" | "hxscan" | "hxscan.exe"
         ) {
             tokens.remove(0);
         }
@@ -390,6 +391,12 @@ mod interactive_tests {
         assert_eq!(
             parse_interactive_line("hxscan.exe scanme.nmap.org"),
             vec!["scanme.nmap.org"]
+        );
+        assert_eq!(
+            parse_interactive_line(
+                "C:\\Users\\Cutu\\.cargo\\bin\\tcpscan.exe 127.0.0.1 -p 22,8080 -A"
+            ),
+            vec!["127.0.0.1", "-p", "22,8080", "-A"]
         );
     }
 

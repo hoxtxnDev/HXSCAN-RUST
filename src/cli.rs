@@ -429,7 +429,7 @@ fn profile_defaults(profile: ScanProfile) -> ProfileDefaults {
             burst_size: 2,
             burst_pause_ms: 650,
             adaptive: true,
-            decoy: 2,
+            decoy: 0,
             ai_filter: true,
         },
         ScanProfile::Audit => ProfileDefaults {

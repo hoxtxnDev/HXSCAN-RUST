@@ -118,6 +118,21 @@ impl DiscoveryColleague {
             &effective_port_spec,
             mediator.config.exclude_ports.as_deref(),
         )?;
+        // In Ghost mode (--ghost), proactively evade known canary/honeypot trap ports
+        // before Stage 2 ever transmits a TCP SYN packet.
+        if mediator.config.scanner.stealth.mode == crate::mediator::StealthMode::Ghost
+            && ports.len() > 1
+        {
+            const CANARY_TRAP_PORTS: [u16; 5] = [2222, 2323, 4444, 5555, 31337];
+            let filtered: Vec<u16> = ports
+                .iter()
+                .copied()
+                .filter(|p| !CANARY_TRAP_PORTS.contains(p))
+                .collect();
+            if !filtered.is_empty() {
+                ports = filtered;
+            }
+        }
         if mediator.config.shuffle {
             shuffle_ports(&mut ports, seed);
         }
