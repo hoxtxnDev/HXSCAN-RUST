@@ -104,28 +104,44 @@ pub enum CliAction {
 
 /// Return the formatted CLI help text.
 pub fn help_text() -> String {
-    r#"tcpscan (HXSCAN-RUST v2.2) — Staged Mediator TCP Port Scanner & Cybersecurity Auditor
+    r#"tcpscan (HXSCAN-RUST v3.0.0) — Ultimate Recon & Staged Mediator TCP Scanner
 
 USAGE:
-  tcpscan <target> [ports] [OPTIONS]
+  tcpscan <target|CIDR|range> [ports] [OPTIONS]
   tcpscan -t <target> [-p <ports>] [OPTIONS]
+  tcpscan -iL <targets.txt> [ports] [OPTIONS]
 
-SIMPLICITY EXAMPLES:
+SIMPLICITY & NMAP / NAABU / RUSTSCAN EXAMPLES:
   tcpscan 127.0.0.1                        # Quick-start scan on default cybersecurity ports
   tcpscan scanme.nmap.org 22,80,443        # Positional target + ports (no flags needed!)
-  tcpscan 192.168.1.10:8080                # Inline host:port syntax
-  tcpscan 10.0.0.1 8000-8100 --banner      # Range scan with active banner grabbing
-  tcpscan 192.168.1.1 --profile audit      # Full cybersecurity risk & banner audit
-  tcpscan 10.0.0.5 --json                  # JSON telemetry output for SIEM / jq
+  tcpscan 192.168.1.0/24 22,80,445         # Subnet CIDR scan (/22..=/32)
+  tcpscan 10.0.0.1-25 -F -sV               # IP range + Nmap fast top-20 + version/TLS recon
+  tcpscan 10.0.0.5 -p- -T4 --nmap-cmd      # Full 65,535 sweep + honeypot-filtered Nmap command
+  tcpscan 10.0.0.5 -A -oJ audit.json       # Aggressive audit (versions, TLS, CPE/CVE) saved to JSON
   tcpscan 10.0.0.7 --stealth               # Low-noise jittered scan, no active banners
   tcpscan 10.0.0.7 --mutable               # Corporate blend mode (persona + adaptive pacing)
-  tcpscan 10.0.0.7 --mutable --persona corporate --max-pps 5 --burst 4
 
 ARGUMENTS & FLAGS:
-  -t, --target <HOST>       Target IPv4, IPv6, hostname, or host:port
-  -p, --ports <SPEC>        Ports/ranges (e.g. 22,80,8000-8100) or preset (quick, common, all)
+  -t, --target <SPEC>       Target IP, hostname, host:port, CIDR (192.168.1.0/24), or range (10.0.0.1-20)
+  -iL, --input-list <FILE>  Read targets (IPs, hosts, CIDRs, ranges) from file
+  -p, --ports <SPEC>        Ports/ranges (e.g. 22,80,8000-8100), -p- (1-65535), or preset
+  -p-                       Nmap shorthand for all 65,535 ports
+  -F, --fast, --quick       Fast scan of top 20 critical ports (400ms timeout)
+      --top-ports <N>       Scan top N highest-priority ports (1..=65535)
+      --exclude-ports <SP>  Exclude specific ports or ranges (e.g. 21,8080-8090)
+  -sV                       Enable service version extraction, banner grabbing & TLS/X.509 recon
+  -sT, -Pn, -n              Accepted for Nmap CLI compatibility (TCP connect without ping block)
+  -A                        Aggressive audit: versions (-sV), TLS, CPE/CVE correlation & --nmap-cmd
+  -T0 .. -T5                Nmap timing templates (T0/T1=paranoid/sneaky, T2=stealth, T3=normal, T4/T5=fast)
+      --nmap-cmd            Render a follow-up Nmap command excluding detected honeypot ports
+      --silent              Minimal 'host:port' output for Unix/SIEM pipelines (Naabu style)
+      --grepable            Output Nmap-style grepable report
+  -oN <FILE>                Save human-readable report to FILE
+  -oJ <FILE>                Save structured JSON report to FILE
+  -oC <FILE>                Save CWE-1236-sanitized CSV report to FILE
+  -oG <FILE>                Save grepable report to FILE
+  -o, --output <FILE>       Save report in the active format to FILE
       --profile <NAME>      Scan preset: default | quick | full | stealth | mutable | audit
-      --fast, --quick       Shorthand for --profile quick (top 20 ports, 400ms timeout)
       --full                Shorthand for --profile full (ports 1-65535, 512 threads)
       --stealth             Low-noise mode: shuffled ports, jitter, rate ceiling, no banners
       --mutable             Corporate blend mode: enterprise persona, human-like bursts,
@@ -149,6 +165,7 @@ ARGUMENTS & FLAGS:
       --no-banner           Disable active Banner Grabbing (pure TCP handshake only)
       --shuffle             Randomize port probing order to reduce sequential IDS signature
       --protect-origin      Refuse scanning local origin loopback (127.0.0.0/8, ::1)
+      --open                Show only open ports in the human report table (default)
       --show-closed, --all  Display closed and filtered ports in the human report table
       --json                Output structured JSON report for SIEM/SOAR automation
       --csv                 Output CSV table (protected against CWE-1236 formula injection)
@@ -316,6 +333,9 @@ where
 
     let mut target: Option<String> = None;
     let mut ports: Option<String> = None;
+    let mut exclude_ports: Option<String> = None;
+    let mut input_file: Option<String> = None;
+    let mut output_file: Option<String> = None;
     let mut profile = ScanProfile::Default;
     let mut threads: Option<usize> = None;
     let mut timeout_secs: Option<f64> = None;
@@ -333,6 +353,7 @@ where
     let mut adaptive_pacing: Option<bool> = None;
     let mut protect_origin = false;
     let mut show_closed = false;
+    let mut show_nmap_cmd = false;
     let mut format = OutputFormat::Human;
     let mut use_color = true;
     let mut verbose = false;
@@ -345,7 +366,7 @@ where
             "-h" | "--help" => return Ok(CliAction::ShowHelp(help_text())),
             "-V" | "--version" => {
                 return Ok(CliAction::ShowVersion(
-                    "tcpscan 2.2.0 (HXSCAN-RUST Edition)".to_string(),
+                    "tcpscan 3.0.0 (HXSCAN-RUST Ultimate Recon Edition)".to_string(),
                 ))
             }
             "-t" | "--target" => {
@@ -355,12 +376,42 @@ where
                 }
                 target = Some(tokens[i].clone());
             }
+            "-iL" | "--input-list" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '-iL/--input-list' requires a file path".to_string());
+                }
+                input_file = Some(tokens[i].clone());
+            }
+            "-p-" => {
+                ports = Some("1-65535".to_string());
+            }
             "-p" | "--ports" => {
                 i += 1;
                 if i >= tokens.len() {
                     return Err("Option '-p/--ports' requires a value".to_string());
                 }
                 ports = Some(tokens[i].clone());
+            }
+            "--top-ports" | "-top-ports" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '--top-ports' requires an integer".to_string());
+                }
+                let val = tokens[i]
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid '--top-ports' value: {}", tokens[i]))?;
+                if !(1..=65535).contains(&val) {
+                    return Err("'--top-ports' must be between 1 and 65535".to_string());
+                }
+                ports = Some(format!("top:{val}"));
+            }
+            "--exclude-ports" | "-exclude-ports" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '--exclude-ports' requires a port spec".to_string());
+                }
+                exclude_ports = Some(tokens[i].clone());
             }
             "--profile" => {
                 i += 1;
@@ -369,7 +420,7 @@ where
                 }
                 profile = ScanProfile::from_str(&tokens[i])?;
             }
-            "--fast" | "--quick" => {
+            "-F" | "--fast" | "--quick" => {
                 profile = ScanProfile::Quick;
             }
             "--full" => {
@@ -380,6 +431,57 @@ where
             }
             "--mutable" | "--mutable-mode" | "--blend" => {
                 profile = ScanProfile::Mutable;
+            }
+            "-sV" | "--service-version" => {
+                grab_banners = Some(true);
+            }
+            "-sT" | "-Pn" | "-n" => {
+                // Accepted for Nmap CLI compatibility
+            }
+            "-A" | "--aggressive" => {
+                profile = ScanProfile::Audit;
+                grab_banners = Some(true);
+                show_nmap_cmd = true;
+            }
+            "--nmap-cmd" => {
+                show_nmap_cmd = true;
+            }
+            "-T0" => {
+                profile = ScanProfile::Stealth;
+                threads = Some(1);
+                timeout_secs = Some(3.0);
+                delay_ms = Some(1000);
+                jitter_ms = Some(500);
+                max_pps = Some(0.5);
+            }
+            "-T1" => {
+                profile = ScanProfile::Stealth;
+                threads = Some(2);
+                timeout_secs = Some(2.0);
+                delay_ms = Some(400);
+                jitter_ms = Some(250);
+                max_pps = Some(1.0);
+            }
+            "-T2" => {
+                profile = ScanProfile::Stealth;
+                threads = Some(10);
+                timeout_secs = Some(1.0);
+                delay_ms = Some(50);
+                jitter_ms = Some(120);
+                max_pps = Some(3.0);
+            }
+            "-T3" => {
+                profile = ScanProfile::Default;
+            }
+            "-T4" => {
+                threads = Some(256);
+                timeout_secs = Some(0.5);
+                retries = Some(1);
+            }
+            "-T5" => {
+                threads = Some(512);
+                timeout_secs = Some(0.3);
+                retries = Some(0);
             }
             "--persona" => {
                 i += 1;
@@ -537,6 +639,9 @@ where
             "--protect-origin" | "--no-self-scan" => {
                 protect_origin = true;
             }
+            "--open" => {
+                show_closed = false;
+            }
             "--show-closed" | "--all" => {
                 show_closed = true;
             }
@@ -546,11 +651,60 @@ where
             "--csv" => {
                 format = OutputFormat::Csv;
             }
+            "--grepable" => {
+                format = OutputFormat::Grepable;
+            }
+            "--silent" | "-silent" => {
+                format = OutputFormat::Silent;
+            }
+            "-oN" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '-oN' requires an output file path".to_string());
+                }
+                format = OutputFormat::Human;
+                use_color = false;
+                output_file = Some(tokens[i].clone());
+            }
+            "-oJ" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '-oJ' requires an output file path".to_string());
+                }
+                format = OutputFormat::Json;
+                output_file = Some(tokens[i].clone());
+            }
+            "-oC" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '-oC' requires an output file path".to_string());
+                }
+                format = OutputFormat::Csv;
+                output_file = Some(tokens[i].clone());
+            }
+            "-oG" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '-oG' requires an output file path".to_string());
+                }
+                format = OutputFormat::Grepable;
+                output_file = Some(tokens[i].clone());
+            }
+            "-o" | "--output" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '-o/--output' requires an output file path".to_string());
+                }
+                output_file = Some(tokens[i].clone());
+            }
             "--no-color" => {
                 use_color = false;
             }
             "-v" | "--verbose" => {
                 verbose = true;
+            }
+            other if other.starts_with("-p") && other.len() > 2 && !other.starts_with("--") => {
+                ports = Some(other[2..].to_string());
             }
             other if other.starts_with('-') => {
                 return Err(format!(
@@ -577,15 +731,23 @@ where
         ));
     }
 
-    let target_input = target.ok_or_else(|| {
-        "Target is required. Example: 'tcpscan 127.0.0.1' or 'tcpscan -t 127.0.0.1'".to_string()
-    })?;
+    let target_input = match (target, input_file.is_some()) {
+        (Some(t), _) => t,
+        (None, true) => String::new(),
+        (None, false) => {
+            return Err(
+                "Target is required. Example: 'tcpscan 127.0.0.1' or 'tcpscan -t 127.0.0.1'"
+                    .to_string(),
+            )
+        }
+    };
 
     let defaults = profile_defaults(profile);
 
-    let has_inline_port = crate::stages::stage1_discovery::split_target_inline_port(&target_input)
-        .1
-        .is_some();
+    let has_inline_port = !target_input.is_empty()
+        && crate::stages::stage1_discovery::split_target_inline_port(&target_input)
+            .1
+            .is_some();
 
     let resolved_ports = match ports {
         Some(p) => p,
@@ -634,6 +796,9 @@ where
     let config = PipelineConfig {
         target_input,
         port_spec: resolved_ports,
+        exclude_ports,
+        input_file,
+        output_file,
         scanner,
         grab_banners: grab_banners.unwrap_or(defaults.banners),
         banner_timeout,
@@ -644,6 +809,7 @@ where
             format,
             show_closed,
             use_color,
+            show_nmap_cmd,
         },
     };
 
@@ -779,5 +945,58 @@ mod tests {
         assert!(parse_cli_args(["127.0.0.1", "--burst", "999"]).is_err());
         assert!(parse_cli_args(["127.0.0.1", "--decoy-probes", "999"]).is_err());
         assert!(parse_cli_args(["127.0.0.1", "--persona", "unknown"]).is_err());
+    }
+
+    #[test]
+    fn test_nmap_and_naabu_v3_cli_flags() {
+        let action = parse_cli_args([
+            "192.168.1.10",
+            "-sV",
+            "-sT",
+            "-Pn",
+            "-n",
+            "-A",
+            "-p22,80,443,8080",
+            "--exclude-ports",
+            "8080",
+            "-T4",
+            "--open",
+            "-oJ",
+            "audit.json",
+        ])
+        .unwrap();
+        match action {
+            CliAction::Run(cfg) => {
+                assert_eq!(cfg.target_input, "192.168.1.10");
+                assert_eq!(cfg.port_spec, "22,80,443,8080");
+                assert_eq!(cfg.exclude_ports.as_deref(), Some("8080"));
+                assert!(cfg.grab_banners);
+                assert!(cfg.report_options.show_nmap_cmd);
+                assert!(!cfg.report_options.show_closed);
+                assert_eq!(cfg.report_options.format, OutputFormat::Json);
+                assert_eq!(cfg.output_file.as_deref(), Some("audit.json"));
+                assert_eq!(cfg.scanner.threads, 256);
+                assert_eq!(cfg.scanner.timeout, Duration::from_millis(500));
+            }
+            _ => panic!("Expected CliAction::Run"),
+        }
+
+        // Test -p- and --top-ports and --silent
+        let action2 = parse_cli_args(["10.0.0.1", "-p-", "--silent"]).unwrap();
+        if let CliAction::Run(cfg) = action2 {
+            assert_eq!(cfg.port_spec, "1-65535");
+            assert_eq!(cfg.report_options.format, OutputFormat::Silent);
+        } else {
+            panic!("Expected CliAction::Run");
+        }
+
+        let action3 = parse_cli_args(["10.0.0.1", "--top-ports", "15", "-T2"]).unwrap();
+        if let CliAction::Run(cfg) = action3 {
+            assert_eq!(cfg.port_spec, "top:15");
+            assert_eq!(cfg.scanner.stealth.mode, StealthMode::Stealth);
+            assert_eq!(cfg.scanner.threads, 10);
+        } else {
+            panic!("Expected CliAction::Run");
+        }
     }
 }

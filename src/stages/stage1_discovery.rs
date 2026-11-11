@@ -29,6 +29,21 @@ pub const DEFAULT_PORTS_SPEC: &str =
 pub const QUICK_PORTS_SPEC: &str =
     "21,22,23,25,53,80,135,139,443,445,1433,3306,3389,5432,5900,6379,8080,8443,9200,27017";
 
+/// Maximum number of expanded hosts allowed in a single CIDR / IP-range / `-iL` run
+/// to protect the origin host from memory/socket exhaustion.
+pub const MAX_MULTI_TARGETS: usize = 1024;
+
+/// Top 100 highest-priority cybersecurity & enterprise ports ordered by frequency/criticality
+/// for `--top-ports <N>`.
+pub const TOP_PORTS_RANKED: &[u16] = &[
+    80, 443, 22, 21, 25, 3389, 110, 445, 139, 143, 53, 135, 3306, 8080, 1723, 111, 995, 993, 5900,
+    1025, 587, 8888, 199, 1720, 465, 548, 113, 81, 6001, 10000, 514, 5060, 179, 1026, 2000, 8443,
+    8000, 32768, 554, 26, 1433, 49152, 2001, 515, 8008, 49154, 1027, 5666, 646, 5000, 5631, 631,
+    49153, 8081, 2049, 88, 79, 5800, 106, 2121, 1110, 49155, 6000, 513, 990, 5357, 427, 49156, 543,
+    544, 5101, 144, 7, 389, 8009, 3128, 444, 9999, 5009, 7070, 5190, 3000, 5432, 6379, 27017, 9200,
+    2375, 2376, 6443, 5985, 5986, 1521, 2181, 2379, 5601, 5672, 853, 8883, 9042, 9090,
+];
+
 /// Errors that can occur during Stage 1 (Discovery, Validation & Origin Host Protection).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscoveryError {
@@ -99,7 +114,10 @@ impl DiscoveryColleague {
             mediator.config.port_spec.clone()
         };
 
-        let mut ports = parse_port_spec(&effective_port_spec)?;
+        let mut ports = parse_port_spec_with_exclusions(
+            &effective_port_spec,
+            mediator.config.exclude_ports.as_deref(),
+        )?;
         if mediator.config.shuffle {
             shuffle_ports(&mut ports, seed);
         }
@@ -323,6 +341,23 @@ impl PortBitmap {
         self.bits[end_word] |= last_mask;
     }
 
+    #[inline]
+    fn remove(&mut self, port: u16) {
+        let idx = (port as usize) >> 6;
+        let mask = 1u64 << ((port as usize) & 63);
+        if (self.bits[idx] & mask) != 0 {
+            self.bits[idx] &= !mask;
+            self.count = self.count.saturating_sub(1);
+        }
+    }
+
+    #[inline]
+    fn remove_range(&mut self, start: u16, end: u16) {
+        for p in start..=end {
+            self.remove(p);
+        }
+    }
+
     fn into_sorted_vec(self) -> Vec<u16> {
         let mut out = Vec::with_capacity(self.count);
         for (word_idx, &word) in self.bits.iter().enumerate() {
@@ -345,50 +380,123 @@ impl PortBitmap {
 
 /// Parse a port specification string into a deduplicated, sorted `Vec<u16>`.
 pub fn parse_port_spec(spec: &str) -> Result<Vec<u16>, DiscoveryError> {
+    parse_port_spec_with_exclusions(spec, None)
+}
+
+/// Parse a port specification string and subtract any ports in `exclude_spec` (`--exclude-ports`).
+pub fn parse_port_spec_with_exclusions(
+    spec: &str,
+    exclude_spec: Option<&str>,
+) -> Result<Vec<u16>, DiscoveryError> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
         return Err(DiscoveryError::EmptyPortList);
     }
 
-    let expanded = match trimmed.to_ascii_lowercase().as_str() {
-        "default" | "common" => DEFAULT_PORTS_SPEC,
-        "quick" | "fast" | "top20" => QUICK_PORTS_SPEC,
-        "all" | "full" | "-" => "1-65535",
-        _ => trimmed,
-    };
-
     let mut bitmap = PortBitmap::new();
+    let lower = trimmed.to_ascii_lowercase();
 
-    for raw_token in expanded.split(',') {
-        let token = raw_token.trim();
-        if token.is_empty() {
-            continue;
+    if let Some(top_str) = lower.strip_prefix("top:") {
+        let count = top_str.trim().parse::<usize>().map_err(|_| {
+            DiscoveryError::InvalidPortSpec(format!("Invalid --top-ports count: {top_str}"))
+        })?;
+        if !(1..=65535).contains(&count) {
+            return Err(DiscoveryError::InvalidPortSpec(format!(
+                "--top-ports must be between 1 and 65535 (got {count})"
+            )));
         }
-
-        if let Some((start_str, end_str)) = token.split_once('-') {
-            let start_val = start_str.trim().parse::<u32>().map_err(|_| {
-                DiscoveryError::InvalidPortSpec(format!("Invalid port range: {token}"))
-            })?;
-            let end_val = end_str.trim().parse::<u32>().map_err(|_| {
-                DiscoveryError::InvalidPortSpec(format!("Invalid port range: {token}"))
-            })?;
-
-            if start_val < 1 || end_val > 65535 || start_val > end_val {
-                return Err(DiscoveryError::InvalidPortSpec(format!(
-                    "Invalid port range: {token}"
-                )));
+        for &port in TOP_PORTS_RANKED.iter().take(count) {
+            bitmap.insert(port);
+        }
+        let mut next_port = 1u16;
+        while bitmap.count < count {
+            bitmap.insert(next_port);
+            if next_port == u16::MAX {
+                break;
             }
-            bitmap.insert_range(start_val as u16, end_val as u16);
-        } else {
-            let port_val = token.parse::<u32>().map_err(|_| {
-                DiscoveryError::InvalidPortSpec(format!("Invalid port number: {token}"))
-            })?;
-            if !(1..=65535).contains(&port_val) {
-                return Err(DiscoveryError::InvalidPortSpec(format!(
-                    "Port out of range (1-65535): {port_val}"
-                )));
+            next_port += 1;
+        }
+    } else {
+        let expanded = match lower.as_str() {
+            "default" | "common" => DEFAULT_PORTS_SPEC,
+            "quick" | "fast" | "top20" => QUICK_PORTS_SPEC,
+            "all" | "full" | "-" => "1-65535",
+            _ => trimmed,
+        };
+
+        for raw_token in expanded.split(',') {
+            let token = raw_token.trim();
+            if token.is_empty() {
+                continue;
             }
-            bitmap.insert(port_val as u16);
+
+            if let Some((start_str, end_str)) = token.split_once('-') {
+                let start_val = start_str.trim().parse::<u32>().map_err(|_| {
+                    DiscoveryError::InvalidPortSpec(format!("Invalid port range: {token}"))
+                })?;
+                let end_val = end_str.trim().parse::<u32>().map_err(|_| {
+                    DiscoveryError::InvalidPortSpec(format!("Invalid port range: {token}"))
+                })?;
+
+                if start_val < 1 || end_val > 65535 || start_val > end_val {
+                    return Err(DiscoveryError::InvalidPortSpec(format!(
+                        "Invalid port range: {token}"
+                    )));
+                }
+                bitmap.insert_range(start_val as u16, end_val as u16);
+            } else {
+                let port_val = token.parse::<u32>().map_err(|_| {
+                    DiscoveryError::InvalidPortSpec(format!("Invalid port number: {token}"))
+                })?;
+                if !(1..=65535).contains(&port_val) {
+                    return Err(DiscoveryError::InvalidPortSpec(format!(
+                        "Port out of range (1-65535): {port_val}"
+                    )));
+                }
+                bitmap.insert(port_val as u16);
+            }
+        }
+    }
+
+    if let Some(ex_spec) = exclude_spec {
+        let ex_trimmed = ex_spec.trim();
+        if !ex_trimmed.is_empty() {
+            for raw_token in ex_trimmed.split(',') {
+                let token = raw_token.trim();
+                if token.is_empty() {
+                    continue;
+                }
+                if let Some((start_str, end_str)) = token.split_once('-') {
+                    let start_val = start_str.trim().parse::<u32>().map_err(|_| {
+                        DiscoveryError::InvalidPortSpec(format!(
+                            "Invalid excluded port range: {token}"
+                        ))
+                    })?;
+                    let end_val = end_str.trim().parse::<u32>().map_err(|_| {
+                        DiscoveryError::InvalidPortSpec(format!(
+                            "Invalid excluded port range: {token}"
+                        ))
+                    })?;
+                    if start_val < 1 || end_val > 65535 || start_val > end_val {
+                        return Err(DiscoveryError::InvalidPortSpec(format!(
+                            "Invalid excluded port range: {token}"
+                        )));
+                    }
+                    bitmap.remove_range(start_val as u16, end_val as u16);
+                } else {
+                    let port_val = token.parse::<u32>().map_err(|_| {
+                        DiscoveryError::InvalidPortSpec(format!(
+                            "Invalid excluded port number: {token}"
+                        ))
+                    })?;
+                    if !(1..=65535).contains(&port_val) {
+                        return Err(DiscoveryError::InvalidPortSpec(format!(
+                            "Excluded port out of range (1-65535): {port_val}"
+                        )));
+                    }
+                    bitmap.remove(port_val as u16);
+                }
+            }
         }
     }
 
@@ -398,6 +506,146 @@ pub fn parse_port_spec(spec: &str) -> Result<Vec<u16>, DiscoveryError> {
     }
 
     Ok(ports)
+}
+
+/// Expand a target specification (single host, comma-separated list, IPv4 CIDR `a.b.c.d/24..32`,
+/// IPv4 range `a.b.c.start-end` or `ip_start-ip_end`) plus an optional `-iL` file into individual targets.
+pub fn expand_target_inputs(
+    target_input: &str,
+    input_file: Option<&str>,
+) -> Result<Vec<String>, DiscoveryError> {
+    let mut raw_tokens: Vec<String> = Vec::new();
+
+    for part in target_input.split(',') {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            raw_tokens.push(trimmed.to_string());
+        }
+    }
+
+    if let Some(path) = input_file {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            DiscoveryError::InvalidPortSpec(format!("Failed to read target list '{path}': {e}"))
+        })?;
+        for line in content.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            for part in line.split(|c: char| c == ',' || c.is_whitespace()) {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    raw_tokens.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    if raw_tokens.is_empty() {
+        return Err(DiscoveryError::EmptyTarget);
+    }
+
+    let mut expanded: Vec<String> = Vec::new();
+    for token in raw_tokens {
+        expand_single_target_token(&token, &mut expanded)?;
+        if expanded.len() > MAX_MULTI_TARGETS {
+            return Err(DiscoveryError::InvalidPortSpec(format!(
+                "Target expansion exceeds MAX_MULTI_TARGETS ({MAX_MULTI_TARGETS}) for Origin Host Resource Protection"
+            )));
+        }
+    }
+
+    if expanded.is_empty() {
+        return Err(DiscoveryError::EmptyTarget);
+    }
+
+    Ok(expanded)
+}
+
+fn expand_single_target_token(token: &str, out: &mut Vec<String>) -> Result<(), DiscoveryError> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    // 1. Check IPv4 CIDR notation: a.b.c.d/prefix
+    if let Some((ip_str, prefix_str)) = trimmed.split_once('/') {
+        let base_ip = ip_str.trim().parse::<Ipv4Addr>().map_err(|_| {
+            DiscoveryError::InvalidPortSpec(format!("Invalid IPv4 address in CIDR '{trimmed}'"))
+        })?;
+        let prefix = prefix_str.trim().parse::<u32>().map_err(|_| {
+            DiscoveryError::InvalidPortSpec(format!("Invalid CIDR prefix in '{trimmed}'"))
+        })?;
+        if prefix > 32 {
+            return Err(DiscoveryError::InvalidPortSpec(format!(
+                "CIDR prefix must be 0..=32 in '{trimmed}'"
+            )));
+        }
+        if prefix < 22 {
+            return Err(DiscoveryError::InvalidPortSpec(format!(
+                "CIDR '/{prefix}' exceeds safe host expansion bound (/22..=/32 max {MAX_MULTI_TARGETS} hosts)"
+            )));
+        }
+        let base_u32 = u32::from(base_ip);
+        if prefix == 32 {
+            out.push(base_ip.to_string());
+            return Ok(());
+        }
+        let host_bits = 32 - prefix;
+        let mask = u32::MAX << host_bits;
+        let network = base_u32 & mask;
+        let broadcast = network | !mask;
+        let (start, end) = if prefix == 31 {
+            (network, broadcast)
+        } else {
+            (network + 1, broadcast - 1)
+        };
+        for addr_u32 in start..=end {
+            out.push(Ipv4Addr::from(addr_u32).to_string());
+            if out.len() > MAX_MULTI_TARGETS {
+                break;
+            }
+        }
+        return Ok(());
+    }
+
+    // 2. Check IPv4 range notation: a.b.c.start-end or a.b.c.d-e.f.g.h
+    if let Some((left, right)) = trimmed.split_once('-') {
+        if let Ok(start_ip) = left.trim().parse::<Ipv4Addr>() {
+            if let Ok(end_octet) = right.trim().parse::<u8>() {
+                let octets = start_ip.octets();
+                if end_octet < octets[3] {
+                    return Err(DiscoveryError::InvalidPortSpec(format!(
+                        "Inverted IPv4 octet range '{trimmed}'"
+                    )));
+                }
+                for last in octets[3]..=end_octet {
+                    out.push(Ipv4Addr::new(octets[0], octets[1], octets[2], last).to_string());
+                }
+                return Ok(());
+            } else if let Ok(end_ip) = right.trim().parse::<Ipv4Addr>() {
+                let start_u32 = u32::from(start_ip);
+                let end_u32 = u32::from(end_ip);
+                if end_u32 < start_u32 {
+                    return Err(DiscoveryError::InvalidPortSpec(format!(
+                        "Inverted IPv4 range '{trimmed}'"
+                    )));
+                }
+                if (end_u32 - start_u32) as usize >= MAX_MULTI_TARGETS {
+                    return Err(DiscoveryError::InvalidPortSpec(format!(
+                        "IPv4 range '{trimmed}' exceeds MAX_MULTI_TARGETS ({MAX_MULTI_TARGETS})"
+                    )));
+                }
+                for addr_u32 in start_u32..=end_u32 {
+                    out.push(Ipv4Addr::from(addr_u32).to_string());
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    out.push(trimmed.to_string());
+    Ok(())
 }
 
 /// Deterministically or pseudo-randomly shuffle a port slice in-place using Fisher-Yates + Xorshift64.
@@ -590,5 +838,41 @@ mod tests {
         assert_ne!(ports, original);
         ports.sort_unstable();
         assert_eq!(ports, original);
+    }
+
+    #[test]
+    fn test_top_ports_and_port_exclusions() {
+        let top10 = parse_port_spec("top:10").unwrap();
+        assert_eq!(top10.len(), 10);
+        assert!(top10.contains(&80));
+        assert!(top10.contains(&443));
+        assert!(top10.contains(&22));
+
+        let top150 = parse_port_spec("top:150").unwrap();
+        assert_eq!(top150.len(), 150);
+
+        let filtered = parse_port_spec_with_exclusions("20-25,80,443", Some("21,23-25")).unwrap();
+        assert_eq!(filtered, vec![20, 22, 80, 443]);
+    }
+
+    #[test]
+    fn test_cidr_and_ip_range_expansion() {
+        let cidr_30 = expand_target_inputs("192.168.1.0/30", None).unwrap();
+        assert_eq!(cidr_30, vec!["192.168.1.1", "192.168.1.2"]);
+
+        let cidr_32 = expand_target_inputs("10.0.0.9/32", None).unwrap();
+        assert_eq!(cidr_32, vec!["10.0.0.9"]);
+
+        let octet_range = expand_target_inputs("10.0.0.1-4", None).unwrap();
+        assert_eq!(
+            octet_range,
+            vec!["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+        );
+
+        let full_range = expand_target_inputs("10.0.0.10-10.0.0.12", None).unwrap();
+        assert_eq!(full_range, vec!["10.0.0.10", "10.0.0.11", "10.0.0.12"]);
+
+        // Too-wide CIDR (/16 > 1024 hosts) must be rejected safely
+        assert!(expand_target_inputs("10.0.0.0/16", None).is_err());
     }
 }

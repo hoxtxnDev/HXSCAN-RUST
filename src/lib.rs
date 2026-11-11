@@ -1,8 +1,19 @@
-//! # `tcpscan` (HXSCAN-RUST v2.2 — Mediator Pattern Architecture)
+//! # `tcpscan` (HXSCAN-RUST v3.0 — Mediator Pattern Architecture)
 //!
 //! High-performance, zero-dependency, staged modular TCP port scanner and
 //! cybersecurity auditing toolkit built around the **Mediator Design Pattern**
 //! (also known as *Intermediary* or *Controller*).
+//!
+//! ## v3.0 Highlights ("Ultimate Recon Edition")
+//! - **Nmap / Naabu / RustScan CLI ergonomics**: `-sV`, `-A`, `-p-`, `-p<spec>`, `-F`,
+//!   `--top-ports <N>`, `-T0`..`-T5`, `--exclude-ports`, `-iL`, `--silent`, `--grepable`,
+//!   `-oN`, `-oJ`, `-oC`, `-oG`, `-o`.
+//! - **CPE 2.3 & CVE Intelligence**: Passive NVD CPE 2.3 identifier generation, high-impact
+//!   CVE/CWE correlation, and passive OS family hinting (`os_hint`).
+//! - **Honeypot-Filtered Nmap Handoff (`--nmap-cmd`)**: Renders a clean `nmap -sV -sC -p ...`
+//!   follow-up command in the report that automatically excludes suspected honeypot ports.
+//! - **Multi-Target Discovery**: Bounded CIDR (`/22..=/32`), IP ranges (`10.0.0.1-20`),
+//!   comma-separated host lists, and `-iL <file>` target lists (`MAX_MULTI_TARGETS = 1024`).
 //!
 //! ## v2.2 Highlights
 //! - **TLS certificate reconnaissance**: minimal TLS 1.2 `ClientHello` exchange that
@@ -53,8 +64,9 @@ pub use mediator::{
     StealthConfig, StealthMode, StealthTelemetry, TargetInfo, TlsCertificateInfo, TrafficPersona,
 };
 pub use stages::stage1_discovery::{
-    parse_port_spec, resolve_target, shuffle_ports, validate_ip_safety, DiscoveryColleague,
-    DiscoveryError,
+    expand_target_inputs, parse_port_spec, parse_port_spec_with_exclusions, resolve_target,
+    shuffle_ports, validate_ip_safety, DiscoveryColleague, DiscoveryError, MAX_MULTI_TARGETS,
+    TOP_PORTS_RANKED,
 };
 pub use stages::stage2_scanner::{
     classify_connect_error, execute_scan_stage, execute_scan_stage_with_prober, probe_single_port,
@@ -66,11 +78,12 @@ pub use stages::stage3_fingerprint::{
 };
 pub use stages::stage4_honeypot::{analyze_honeypots, evaluate_honeypot_port, HoneypotColleague};
 pub use stages::stage5_audit::{
-    evaluate_port_security, evaluate_port_security_with_honeypot, execute_audit_stage,
-    execute_audit_stage_with_honeypots, AuditColleague,
+    build_cpe23, correlate_cves, evaluate_port_security, evaluate_port_security_with_honeypot,
+    execute_audit_stage, execute_audit_stage_with_honeypots, infer_os_hint, AuditColleague,
 };
 pub use stages::stage6_report::{
-    render_report, render_report_with_stealth, sanitize_csv_cell, ReportColleague,
+    build_clean_nmap_command, render_report, render_report_with_stealth, sanitize_csv_cell,
+    ReportColleague,
 };
 pub use stages::ScanPipeline;
 pub use stealth::{
@@ -91,14 +104,58 @@ where
         Ok(CliAction::ShowHelp(help)) => (0, help, String::new()),
         Ok(CliAction::ShowVersion(ver)) => (0, format!("{ver}\n"), String::new()),
         Ok(CliAction::Run(config)) => {
-            let controller = ScanController::new(config);
-            match controller.execute() {
-                Ok(output) => {
-                    let code = output.exit_code();
-                    (code, output.formatted_report, String::new())
+            let targets =
+                match expand_target_inputs(&config.target_input, config.input_file.as_deref()) {
+                    Ok(list) => list,
+                    Err(err) => return (1, String::new(), format!("[!] {err}\n")),
+                };
+
+            let output_file = config.output_file.clone();
+            let mut combined_stdout = String::new();
+            let mut any_open = false;
+
+            if targets.len() == 1 {
+                let mut single_cfg = config;
+                single_cfg.target_input = targets.into_iter().next().unwrap();
+                let controller = ScanController::new(single_cfg);
+                match controller.execute() {
+                    Ok(output) => {
+                        if output.exit_code() == 0 {
+                            any_open = true;
+                        }
+                        combined_stdout = output.formatted_report;
+                    }
+                    Err(err) => return (1, String::new(), format!("[!] {err}\n")),
                 }
-                Err(err) => (1, String::new(), format!("[!] {err}\n")),
+            } else {
+                for target_item in targets {
+                    let mut item_cfg = config.clone();
+                    item_cfg.target_input = target_item;
+                    let controller = ScanController::new(item_cfg);
+                    match controller.execute() {
+                        Ok(output) => {
+                            if output.exit_code() == 0 {
+                                any_open = true;
+                            }
+                            combined_stdout.push_str(&output.formatted_report);
+                        }
+                        Err(err) => return (1, String::new(), format!("[!] {err}\n")),
+                    }
+                }
             }
+
+            if let Some(ref path) = output_file {
+                if let Err(io_err) = std::fs::write(path, &combined_stdout) {
+                    return (
+                        1,
+                        String::new(),
+                        format!("[!] Failed to write output file '{path}': {io_err}\n"),
+                    );
+                }
+            }
+
+            let code = if any_open { 0 } else { 2 };
+            (code, combined_stdout, String::new())
         }
         Err(err_msg) => (1, String::new(), format!("[!] {err_msg}\n")),
     }
@@ -155,15 +212,16 @@ pub fn run_interactive_shell() -> i32 {
 
     let banner = "\
 ==============================================================================
-  TCPSCAN / HXSCAN-RUST v2.2.0 — Interactive Console Mode (Mediator Pattern)
+  TCPSCAN / HXSCAN-RUST v3.0.0 — Interactive Console Mode (Mediator Pattern)
 ==============================================================================
   Authorized security auditing only. Type a target or command below:
 
   Examples:
     127.0.0.1                           (Scan default critical ports on localhost)
-    127.0.0.1 22,80,135,443,445 -v      (Scan specific ports with Mediator trace)
+    127.0.0.1 -sV -A                    (Full Audit + CPE/CVE + Nmap handoff cmd)
     scanme.nmap.org 22,80,443           (Scan official Nmap public test host)
     example.com:443                     (Inspect TLS 1.2 / X.509 certificate)
+    192.168.1.1-5 --top-ports 20        (Scan IP range on top 20 ports)
     10.0.0.1 --stealth                  (Low-noise jittered scan)
     10.0.0.1 --mutable                  (Corporate workstation persona)
     help                                (Show full CLI flags & options)

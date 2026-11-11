@@ -605,6 +605,10 @@ pub struct AuditedPortResult {
     pub service: String,
     /// Protocol version extracted from the banner (Stage 3).
     pub service_version: Option<String>,
+    /// Standardized NVD CPE 2.3 identifier when product/version is known (Stage 5).
+    pub cpe: Option<String>,
+    /// High-impact CVE / CWE identifiers correlated with the detected version/exposure (Stage 5).
+    pub cves: Vec<String>,
     pub banner: Option<String>,
     pub rtt_micros: Option<u64>,
     pub risk: RiskLevel,
@@ -640,6 +644,8 @@ pub struct SecurityPostureSummary {
     pub possible_honeypot_count: usize,
     /// Ports classified as confirmed `Honeypot` by Stage 4.
     pub confirmed_honeypot_count: usize,
+    /// Passive operating-system hint inferred from service banners and open port profile.
+    pub os_hint: Option<String>,
 }
 
 /// Stealth / anti-AI legitimacy telemetry rendered in the final report.
@@ -684,6 +690,10 @@ pub enum OutputFormat {
     Human,
     Json,
     Csv,
+    /// Nmap-style grepable output (`-oG` / `--grepable`).
+    Grepable,
+    /// Naabu-style minimal `host:port` output for pipelines (`--silent`).
+    Silent,
 }
 
 /// Options controlling `ReportColleague` (Stage 6) rendering.
@@ -692,6 +702,8 @@ pub struct ReportOptions {
     pub format: OutputFormat,
     pub show_closed: bool,
     pub use_color: bool,
+    /// Render the honeypot-filtered Nmap follow-up command (`--nmap-cmd` / `-A`).
+    pub show_nmap_cmd: bool,
 }
 
 impl Default for ReportOptions {
@@ -700,6 +712,7 @@ impl Default for ReportOptions {
             format: OutputFormat::Human,
             show_closed: false,
             use_color: true,
+            show_nmap_cmd: false,
         }
     }
 }

@@ -41,6 +41,12 @@ use crate::tls::{inspect_tls_certificate, is_tls_like_port, server_name_from_inp
 pub struct PipelineConfig {
     pub target_input: String,
     pub port_spec: String,
+    /// Optional port exclusion spec (`--exclude-ports` / `-exclude-ports`).
+    pub exclude_ports: Option<String>,
+    /// Optional target list file (`-iL` / `--input-list`).
+    pub input_file: Option<String>,
+    /// Optional file path to persist the rendered report (`-oN` / `-oJ` / `-oC` / `-oG` / `-o`).
+    pub output_file: Option<String>,
     pub scanner: ScannerConfig,
     pub grab_banners: bool,
     pub banner_timeout: Duration,

@@ -1,4 +1,4 @@
-# Patrón de Diseño Mediator (Mediador / Intermediary / Controller) en `tcpscan` v2.2
+# Patrón de Diseño Mediator (Mediador / Intermediary / Controller) en `tcpscan` v3.0 ("Ultimate Recon Edition")
 
 Este documento detalla la implementación del patrón de comportamiento **Mediator (GoF)** dentro del escáner de puertos TCP de ciberseguridad `tcpscan` (`HXSCAN` Rust Edition), sus **diagramas UML** (Clases, Secuencia, Estados y Topología de Componentes), los **flujos de decisión** introducidos en las versiones 2.1 y 2.2 (legitimidad anti-IA, reconocimiento TLS/X.509, extracción de versión de servicio y clasificación de honeypots) y la **propuesta de escalabilidad óptima** hacia una plataforma SOC / Pentesting distribuida.
 

@@ -1,4 +1,4 @@
-# Guía rápida de `tcpscan` (HXSCAN-RUST v2.2)
+# Guía rápida de `tcpscan` (HXSCAN-RUST v3.0 — "Ultimate Recon Edition")
 
 > ⚠️ **Solo para auditorías autorizadas.** Usa esta herramienta únicamente contra sistemas propios o con autorización escrita explícita. Los modos `stealth`/`mutable` reducen firmas de escaneo, pero **no garantizan** evadir IDS/IPS, EDR o sistemas de IA. Consulta [`SECURITY.md`](SECURITY.md).
 
@@ -49,6 +49,11 @@ La salida muestra una tabla con estado, RTT, servicio, **versión**, riesgo, ver
 | Bloquear escaneo a loopback | `./tcpscan 10.0.0.5 --protect-origin` |
 | Ajuste fino de sigilo | `./tcpscan 10.0.0.5 --stealth --jitter-ms 150 --max-pps 3 --burst 1 --burst-pause-ms 900` |
 | Verbose del Mediador | `./tcpscan 10.0.0.5 -v` |
+| Auditoría agresiva Nmap + CPE/CVE + comando Nmap limpio | `./tcpscan 10.0.0.5 -sV -A` |
+| Top 20 puertos con plantilla rápida `-T4` | `./tcpscan 10.0.0.5 --top-ports 20 -T4` |
+| Escanear subred CIDR (`/24`) o rango IP | `./tcpscan 192.168.1.0/24 -F` / `./tcpscan 10.0.0.1-20` |
+| Excluir puertos honeypot y salida limpia (`host:port`) | `./tcpscan 10.0.0.5 -p- --exclude-ports 2222 --silent` |
+| Guardar reporte directo en JSON (`-oJ`) o texto (`-oN`) | `./tcpscan 10.0.0.5 -sV -oJ reporte.json` |
 
 ---
 

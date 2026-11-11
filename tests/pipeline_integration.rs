@@ -204,7 +204,7 @@ fn test_full_pipeline_json_and_csv_reporting_with_formula_injection_shield() {
         .unwrap();
 
     assert!(out_csv.formatted_report.starts_with(
-        "target,ip,port,state,service,service_version,risk,category,rtt_ms,banner,advisory,tls_subject_cn,tls_issuer_cn,tls_self_signed,tls_hostname_mismatch,tls_days_until_expiry,tls_not_after,tls_sans,honeypot_verdict,honeypot_score,honeypot_behaviors\n"
+        "target,ip,port,state,service,service_version,risk,category,rtt_ms,banner,advisory,tls_subject_cn,tls_issuer_cn,tls_self_signed,tls_hostname_mismatch,tls_days_until_expiry,tls_not_after,tls_sans,honeypot_verdict,honeypot_score,honeypot_behaviors,cpe,cves\n"
     ));
     assert!(out_csv
         .formatted_report
@@ -277,7 +277,7 @@ fn test_e2e_live_loopback_nonblocking_socket() {
     let _ = server_thread.join();
 
     assert!(exit_code == 0 || exit_code == 2);
-    assert!(stdout.contains("TCPSCAN / HXSCAN v2.2 Audit Report"));
+    assert!(stdout.contains("TCPSCAN / HXSCAN v3.0 Audit Report"));
 }
 
 #[test]
@@ -452,7 +452,7 @@ fn test_e2e_exit_code_1_on_invalid_arguments_and_ports() {
 
     let (code_ver, stdout_ver, _) = run_from_args(["--version"]);
     assert_eq!(code_ver, 0);
-    assert!(stdout_ver.contains("tcpscan 2.2.0"));
+    assert!(stdout_ver.contains("tcpscan 3.0.0"));
 }
 
 #[test]
@@ -624,4 +624,64 @@ fn test_stealth_mode_engages_adaptive_pacing_on_filtered_feedback() {
     );
     assert_eq!(output.stealth_telemetry.mode, StealthMode::Stealth);
     assert_eq!(output.stealth_telemetry.filtered_ratio_pct, 30);
+}
+
+#[test]
+fn test_v3_aggressive_audit_cpe_cve_os_hint_and_honeypot_filtered_nmap_cmd() {
+    let action = parse_cli_args([
+        "10.0.0.5",
+        "-p22,80,2222,8080",
+        "--exclude-ports",
+        "8080",
+        "-A",
+        "--no-color",
+    ])
+    .unwrap();
+    let config = match action {
+        CliAction::Run(cfg) => cfg,
+        _ => panic!("Expected CliAction::Run"),
+    };
+
+    let output = ScanController::new(config)
+        .execute_with_prober(|port| match port {
+            22 => RawProbeResult {
+                port,
+                state: PortState::Open,
+                rtt_micros: Some(450),
+                attempts: 1,
+                inline_banner: Some("SSH-2.0-OpenSSH_9.2p1 Debian-2".to_string()),
+            },
+            80 => RawProbeResult {
+                port,
+                state: PortState::Open,
+                rtt_micros: Some(550),
+                attempts: 1,
+                inline_banner: Some("HTTP/1.1 200 OK (Apache/2.4.49 (Ubuntu))".to_string()),
+            },
+            2222 => RawProbeResult {
+                port,
+                state: PortState::Open,
+                rtt_micros: Some(900),
+                attempts: 1,
+                inline_banner: Some("SSH-2.0-Cowrie-1.0".to_string()),
+            },
+            _ => unreachable!("Port 8080 should have been excluded by --exclude-ports"),
+        })
+        .unwrap();
+
+    // Port 8080 was excluded, leaving 3 ports (22, 80, 2222)
+    assert_eq!(output.summary.total_scanned, 3);
+    assert_eq!(output.summary.os_hint.as_deref(), Some("Linux (Debian)"));
+
+    let report = &output.formatted_report;
+    assert!(report.contains("TCPSCAN / HXSCAN v3.0 Audit Report"));
+    assert!(report.contains("OS Hint: Linux (Debian)"));
+    assert!(report.contains("[CPE & Vulnerability Intelligence (CVE)]"));
+    assert!(report.contains("cpe:2.3:a:openbsd:openssh:9.2p1:*:*:*:*:*:*:*"));
+    assert!(report.contains("CVE-2024-6387"));
+    assert!(report.contains("CVE-2021-41773"));
+    // Honeypot port 2222 (Cowrie) MUST be excluded from the Nmap handoff command
+    assert!(report.contains("[Honeypot-Filtered Nmap Handoff Command]"));
+    assert!(report.contains("nmap -sV -sC -p 22,80 10.0.0.5"));
+    assert!(!report.contains("nmap -sV -sC -p 22,80,2222"));
 }

@@ -470,6 +470,7 @@ mod tests {
             firewall_detected: true,
             possible_honeypot_count: 0,
             confirmed_honeypot_count: 0,
+            os_hint: None,
         };
         assert_eq!(filtered_ratio_pct(&summary), 50);
     }

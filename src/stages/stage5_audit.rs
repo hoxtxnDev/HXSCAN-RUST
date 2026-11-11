@@ -87,6 +87,8 @@ pub fn evaluate_port_security_with_honeypot(
             state: item.state,
             service: item.service,
             service_version: item.service_version,
+            cpe: None,
+            cves: Vec::new(),
             banner: item.banner,
             rtt_micros: item.rtt_micros,
             risk: RiskLevel::None,
@@ -124,6 +126,36 @@ pub fn evaluate_port_security_with_honeypot(
         }
     }
 
+    let cpe = build_cpe23(
+        &item.service,
+        item.service_version.as_deref(),
+        item.banner.as_deref(),
+    );
+    let cves = correlate_cves(
+        item.port,
+        &item.service,
+        item.service_version.as_deref(),
+        item.banner.as_deref(),
+    );
+    if !cves.is_empty() {
+        if cves.iter().any(|c| {
+            c == "CVE-2024-6387"
+                || c == "CVE-2011-2523"
+                || c == "CVE-2021-41773"
+                || c == "CVE-2021-42013"
+                || c == "CVE-2015-3306"
+                || c == "CVE-2019-10149"
+        }) {
+            risk = RiskLevel::Critical;
+        } else if risk < RiskLevel::High {
+            risk = RiskLevel::High;
+        }
+        let joined = cves.join(", ");
+        if !advisory.contains(&joined) {
+            advisory.push_str(&format!(" [Vuln Intel: {joined}]"));
+        }
+    }
+
     if let Some(ref tls) = item.tls {
         if tls.self_signed {
             advisory.push_str(" [self-signed certificate]");
@@ -141,6 +173,8 @@ pub fn evaluate_port_security_with_honeypot(
         state: item.state,
         service: item.service,
         service_version: item.service_version,
+        cpe,
+        cves,
         banner: item.banner,
         rtt_micros: item.rtt_micros,
         risk,
@@ -148,6 +182,223 @@ pub fn evaluate_port_security_with_honeypot(
         advisory,
         tls: item.tls,
         honeypot,
+    }
+}
+
+/// Build an NVD-compatible CPE 2.3 identifier (`cpe:2.3:a:vendor:product:version:...`)
+/// from extracted service/version or raw banner metadata.
+pub fn build_cpe23(
+    service: &str,
+    service_version: Option<&str>,
+    banner: Option<&str>,
+) -> Option<String> {
+    let combined = service_version.or(banner)?;
+    let lower = combined.to_ascii_lowercase();
+
+    let (vendor, product, raw_ver) = if lower.contains("openssh") {
+        (
+            "openbsd",
+            "openssh",
+            extract_version_after(&lower, "openssh"),
+        )
+    } else if lower.contains("nginx") {
+        ("f5", "nginx", extract_version_after(&lower, "nginx"))
+    } else if lower.contains("apache") {
+        (
+            "apache",
+            "http_server",
+            extract_version_after(&lower, "apache"),
+        )
+    } else if lower.contains("vsftpd") {
+        (
+            "vsftpd_project",
+            "vsftpd",
+            extract_version_after(&lower, "vsftpd"),
+        )
+    } else if lower.contains("proftpd") {
+        (
+            "proftpd",
+            "proftpd",
+            extract_version_after(&lower, "proftpd"),
+        )
+    } else if lower.contains("postfix") {
+        (
+            "postfix",
+            "postfix",
+            extract_version_after(&lower, "postfix"),
+        )
+    } else if lower.contains("exim") {
+        ("exim", "exim", extract_version_after(&lower, "exim"))
+    } else if lower.contains("dovecot") {
+        (
+            "dovecot",
+            "dovecot",
+            extract_version_after(&lower, "dovecot"),
+        )
+    } else if lower.contains("mariadb") {
+        (
+            "mariadb",
+            "mariadb",
+            extract_version_after(&lower, "mariadb"),
+        )
+    } else if lower.contains("mysql") {
+        ("oracle", "mysql", extract_version_after(&lower, "mysql"))
+    } else if lower.contains("redis") {
+        ("redis", "redis", extract_version_after(&lower, "redis"))
+    } else if lower.contains("microsoft-iis") || lower.contains("iis/") {
+        (
+            "microsoft",
+            "internet_information_services",
+            extract_version_after(&lower, "iis"),
+        )
+    } else if lower.contains("caddy") {
+        (
+            "caddyserver",
+            "caddy",
+            extract_version_after(&lower, "caddy"),
+        )
+    } else if service.eq_ignore_ascii_case("SSH") && lower.starts_with("ssh-2.0-") {
+        ("ietf", "ssh", Some("*".to_string()))
+    } else {
+        return None;
+    };
+
+    let ver = raw_ver.unwrap_or_else(|| "*".to_string());
+    Some(format!("cpe:2.3:a:{vendor}:{product}:{ver}:*:*:*:*:*:*:*"))
+}
+
+fn extract_version_after(haystack_lower: &str, token: &str) -> Option<String> {
+    let idx = haystack_lower.find(token)?;
+    let rest = &haystack_lower[idx + token.len()..];
+    let trimmed = rest.trim_start_matches([' ', '/', '_', '-', ':']);
+    let ver: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+        .collect();
+    let ver = ver.trim_matches(['.', '-']);
+    if ver.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        Some(ver.to_string())
+    } else {
+        None
+    }
+}
+
+/// Passively correlate extracted service version and banner strings against high-impact
+/// CVEs and CWEs for defensive posture reporting (zero active exploitation).
+pub fn correlate_cves(
+    port: u16,
+    service: &str,
+    service_version: Option<&str>,
+    banner: Option<&str>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let combined = format!(
+        "{} {} {}",
+        service,
+        service_version.unwrap_or(""),
+        banner.unwrap_or("")
+    )
+    .to_ascii_lowercase();
+
+    if combined.contains("vsftpd 2.3.4") || combined.contains("vsftpd/2.3.4") {
+        out.push("CVE-2011-2523".to_string());
+    }
+
+    if let Some(ssh_ver) = extract_version_after(&combined, "openssh") {
+        if is_openssh_regresshion_vulnerable(&ssh_ver) {
+            out.push("CVE-2024-6387".to_string());
+        } else if ssh_ver.starts_with("5.")
+            || ssh_ver.starts_with("6.")
+            || ssh_ver.starts_with("7.0")
+            || ssh_ver.starts_with("7.1")
+            || ssh_ver.starts_with("7.2")
+        {
+            out.push("CVE-2016-0777".to_string());
+        }
+    }
+
+    if combined.contains("apache/2.4.49") || combined.contains("apache 2.4.49") {
+        out.push("CVE-2021-41773".to_string());
+    }
+    if combined.contains("apache/2.4.50") || combined.contains("apache 2.4.50") {
+        out.push("CVE-2021-42013".to_string());
+    }
+    if combined.contains("proftpd 1.3.5") || combined.contains("proftpd/1.3.5") {
+        out.push("CVE-2015-3306".to_string());
+    }
+    if combined.contains("exim 4.87")
+        || combined.contains("exim 4.88")
+        || combined.contains("exim 4.89")
+        || combined.contains("exim 4.90")
+        || combined.contains("exim 4.91")
+    {
+        out.push("CVE-2019-10149".to_string());
+    }
+
+    if banner.is_some_and(|b| b.to_ascii_uppercase().starts_with("+PONG")) || port == 2375 {
+        out.push("CWE-306".to_string());
+    }
+
+    out
+}
+
+fn is_openssh_regresshion_vulnerable(ver: &str) -> bool {
+    // OpenSSH 8.5p1 <= ver < 9.8p1 (CVE-2024-6387 regreSSHion)
+    let numeric: String = ver
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = numeric.split('.');
+    let Some(major) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(minor) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+        return false;
+    };
+    (major == 8 && (5..=9).contains(&minor)) || (major == 9 && minor <= 6)
+}
+
+/// Passively infer the target Operating System family from service banners and open port profiles.
+pub fn infer_os_hint(audited: &[AuditedPortResult]) -> Option<String> {
+    let mut has_windows_ports = false;
+    let mut has_ssh = false;
+
+    for item in audited.iter().filter(|r| r.state == PortState::Open) {
+        if let Some(ref banner) = item.banner {
+            let lower = banner.to_ascii_lowercase();
+            if lower.contains("ubuntu") {
+                return Some("Linux (Ubuntu)".to_string());
+            }
+            if lower.contains("debian") {
+                return Some("Linux (Debian)".to_string());
+            }
+            if lower.contains("freebsd") {
+                return Some("FreeBSD".to_string());
+            }
+            if lower.contains("centos") || lower.contains("red hat") || lower.contains("rhel") {
+                return Some("Linux (RHEL/CentOS)".to_string());
+            }
+            if lower.contains("alpine") {
+                return Some("Linux (Alpine)".to_string());
+            }
+            if lower.contains("microsoft-iis") || lower.contains("windows") {
+                return Some("Microsoft Windows".to_string());
+            }
+        }
+        if matches!(item.port, 135 | 139 | 445 | 3389 | 5985 | 5986) {
+            has_windows_ports = true;
+        }
+        if item.port == 22 || item.service.eq_ignore_ascii_case("SSH") {
+            has_ssh = true;
+        }
+    }
+
+    if has_windows_ports {
+        Some("Microsoft Windows (SMB/RPC/RDP port profile)".to_string())
+    } else if has_ssh {
+        Some("Linux / Unix-like (SSH service profile)".to_string())
+    } else {
+        None
     }
 }
 
@@ -340,6 +591,8 @@ pub fn execute_audit_stage_with_honeypots(
         'A'
     };
 
+    let os_hint = infer_os_hint(&audited);
+
     let summary = SecurityPostureSummary {
         total_scanned,
         open_count,
@@ -354,6 +607,7 @@ pub fn execute_audit_stage_with_honeypots(
         firewall_detected: filtered_count > 0,
         possible_honeypot_count,
         confirmed_honeypot_count,
+        os_hint,
     };
 
     (audited, summary)
@@ -463,5 +717,43 @@ mod tests {
         assert_eq!(summary.filtered_count, 1);
         assert!(summary.firewall_detected);
         assert_eq!(summary.posture_grade, 'B');
+    }
+
+    #[test]
+    fn test_cpe23_and_cve_correlation_and_os_hint() {
+        let ssh = EnrichedPortResult {
+            port: 22,
+            state: PortState::Open,
+            service: "SSH".to_string(),
+            service_version: Some("OpenSSH 9.2p1".to_string()),
+            banner: Some("SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u2".to_string()),
+            rtt_micros: Some(400),
+            tls: None,
+        };
+        let apache = EnrichedPortResult {
+            port: 80,
+            state: PortState::Open,
+            service: "HTTP".to_string(),
+            service_version: Some("Apache 2.4.49".to_string()),
+            banner: Some("HTTP/1.1 200 OK | Server: Apache/2.4.49 (Ubuntu)".to_string()),
+            rtt_micros: Some(500),
+            tls: None,
+        };
+
+        let (audited, summary) = execute_audit_stage(vec![ssh, apache], AddressScope::Private);
+        assert_eq!(
+            audited[0].cpe.as_deref(),
+            Some("cpe:2.3:a:openbsd:openssh:9.2p1:*:*:*:*:*:*:*")
+        );
+        assert!(audited[0].cves.contains(&"CVE-2024-6387".to_string()));
+        assert_eq!(audited[0].risk, RiskLevel::Critical);
+
+        assert_eq!(
+            audited[1].cpe.as_deref(),
+            Some("cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*")
+        );
+        assert!(audited[1].cves.contains(&"CVE-2021-41773".to_string()));
+        assert_eq!(audited[1].risk, RiskLevel::Critical);
+        assert_eq!(summary.os_hint.as_deref(), Some("Linux (Debian)"));
     }
 }

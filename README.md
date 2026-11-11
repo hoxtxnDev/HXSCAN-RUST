@@ -22,7 +22,7 @@
 
 ---
 
-## 🚀 ¿Qué es `HXSCAN-RUST` (`tcpscan` v2.2)?
+## 🚀 ¿Qué es `HXSCAN-RUST` (`tcpscan` v3.0 — "Ultimate Recon Edition")?
 
 `HXSCAN-RUST` es la evolución completa en **Rust** del antiguo escáner en Python, rediseñado como una herramienta profesional de auditoría de ciberseguridad (**TCP Port Scanning, Attack Surface Auditing, TLS/X.509 Reconnaissance & Deception Detection**). La versión **2.2** añade reconocimiento TLS real, extracción de versiones de servicio y evidencia de certificado para la detección de honeypots, sobre la base de los modos de baja huella, camuflaje corporativo y sobre de legitimidad anti-IA introducidos en la 2.1. Mantiene intactos los dos pilares del proyecto:
 
@@ -32,6 +32,19 @@
    - Documentación detallada y diagramas UML completos en [`ARCHITECTURE_MEDIATOR_UML.md`](ARCHITECTURE_MEDIATOR_UML.md).
 2. **Cero Dependencias Externas (`100% Rust std`)**:
    - Sin crates de terceros: compilación limpia en segundos y **cero superficie de ataque por cadena de suministro (Supply-Chain Security)**.
+
+---
+
+## ✨ Novedades de la versión 3.0 ("Ultimate Recon Edition")
+
+| Capacidad | Qué aporta |
+|-----------|------------|
+| 🧭 **Ergonomía Nmap + Naabu + RustScan** | Flags nativos `-sV`, `-sT`, `-Pn`, `-n`, `-A`, `-p-`, `-p<spec>`, `-F`, `--top-ports <N>`, `-T0`..`-T5`, `--exclude-ports`, `-iL`, `--open`, `--silent`, `--grepable`, `-oN`, `-oJ`, `-oC`, `-oG`, `-o`. |
+| 🛡️ **CPE 2.3 + Correlación CVE/CWE** | Generación automática de strings NVD `cpe:2.3:a:...` y correlación pasiva con CVEs críticos (`CVE-2024-6387` regreSSHion, `CVE-2011-2523`, `CVE-2021-41773`, `CVE-2021-42013`, `CVE-2015-3306`, `CVE-2019-10149`, `CWE-306`). |
+| 💻 **Inferencia pasiva de SO (`OS Hint`)** | Identifica familia de sistema operativo (`Linux (Debian/Ubuntu/Alpine/RHEL)`, `FreeBSD`, `Microsoft Windows`) a partir de banners y perfil de puertos abiertos. |
+| 🤝 **Puente `--nmap-cmd` Anti-Honeypot** | Genera en el reporte el comando exacto `nmap -sV -sC -p <puertos_limpios> <ip>` **excluyendo automáticamente cualquier puerto marcado como honeypot** por Stage 4 (sin ejecutar procesos externos). |
+| 🌐 **Multi-Target (CIDR, Rangos y `-iL`)** | Escanea subredes IPv4 (`192.168.1.0/24`, `/22..=/32`), rangos (`10.0.0.1-20`), listas separadas por coma y archivos `-iL targets.txt` (acotado a `MAX_MULTI_TARGETS = 1024`). |
+| 🪟 **Consola Interactiva en Windows** | Al abrir `tcpscan.exe` con doble clic sin argumentos, permanece abierto en un shell interactivo `tcpscan>` listo para auditar. |
 
 ---
 
@@ -89,7 +102,7 @@
 | **Auditoría Ciberseguridad** | Ninguna | **Motor de Riesgo (`CRITICAL` a `INFO`), Posture Score (`0-100`, Grado `A`–`F`) y alertas en vivo** |
 | **Formatos de Salida** | Texto plano (con bug de puertos cerrados) | **Tabla Humana ANSI, JSON (`--json` para SIEM) y CSV (`--csv`) con telemetría stealth y honeypot** |
 | **Ejecución CLI** | Obligatorio usar `-t <host> -p <ports>` | **Simplicidad posicional `tcpscan <host> [ports]`**, `host:port`, perfiles y flags clásicos |
-| **Testing** | 15 tests básicos | **74 tests en Rust** (62 unitarios + 12 de integración, incluyendo TLS/X.509 y captura end-to-end) |
+| **Testing** | 15 tests básicos | **81 tests en Rust** (68 unitarios + 13 de integración, incluyendo CPE/CVE, Nmap handoff anti-honeypot, CIDR/rangos y TLS/X.509) |
 
 ---
 
@@ -133,8 +146,11 @@ cargo build --release
 # 7️⃣ Salida CSV blindada contra Formula Injection (CWE-1236)
 ./tcpscan 127.0.0.1 22,80,443 --csv
 
-# 8️⃣ 100% retrocompatible con las banderas clásicas de hxscan
-./tcpscan -t 192.168.1.1 -p "22,80,443,8000-8100" --threads 100 --timeout 0.5 -v
+# 8️⃣ 100% retrocompatible con las banderas clásicas de hxscan y Nmap/Naabu/RustScan (v3.0)
+./tcpscan 192.168.1.10 -sV -A                                  # Auditoría agresiva + CPE/CVE + comando Nmap limpio
+./tcpscan 192.168.1.0/24 --top-ports 20 -T4                    # Barrido CIDR en top 20 puertos con plantilla T4
+./tcpscan 10.0.0.1-25 -p- --exclude-ports 2222 --silent        # Rango IP, 65535 puertos, salida limpia host:port
+./tcpscan -iL targets.txt -sV -oJ reporte.json                 # Lista de objetivos con exportación directa a JSON
 ```
 
 > 🛡️ **Seguridad y Protección del Equipo de Origen**: Consulta el reporte completo de auditoría y blindaje en [`SECURITY.md`](SECURITY.md).
@@ -432,9 +448,9 @@ El CSV incorpora `service_version` y siete columnas TLS (`tls_subject_cn`, `tls_
 cargo test
 ```
 
-Incluye **74 pruebas automatizadas**:
-- **62 pruebas unitarias** distribuidas en cada etapa, `stealth.rs` y `tls.rs` (`PortBitmap` de 65,535 puertos, clasificación de alcance IP, bloqueo de DNS Rebinding y `0.0.0.0`, distribución multihilo *lock-free*, `MockStream` para sondas HTTP/Redis/SSH, mutación de cabeceras por persona, pacing adaptativo, jitter, decoys, sanitización ANSI CSI/OSC, protección CSV CWE-1236, escalado de severidad, firmas y señales agregadas de honeypot, **parser DER/X.509, SNI, SAN, wildcard matching, expiración, self-signed y ClientHello TLS 1.2**, extracción de versiones y formatos de reporte).
-- **12 pruebas de integración** en [`tests/pipeline_integration.rs`](tests/pipeline_integration.rs) verificando la traza cronológica del **Mediator** (`event_trace`), directivas reactivas (`PublicTargetHardeningMode`, `FirewallDropDetected`, `AdaptivePacingEngaged`, `PossibleHoneypotDetected`, `ConfirmedHoneypotDetected`, `EscalateCriticalAlert`), telemetría `mutable`, clasificación de honeypots, bloqueo `--protect-origin`, **captura TLS end-to-end contra un servidor loopback instrumentado**, sockets y códigos de salida (`0`, `1`, `2`).
+Incluye **81 pruebas automatizadas**:
+- **68 pruebas unitarias** distribuidas en cada etapa, `cli.rs`, `stealth.rs` y `tls.rs` (`PortBitmap` de 65,535 puertos, `--top-ports`, `--exclude-ports`, expansión CIDR `/22..=/32` y rangos IP, clasificación de alcance IP, bloqueo de DNS Rebinding y `0.0.0.0`, distribución multihilo *lock-free*, `MockStream` para sondas HTTP/Redis/SSH, mutación de cabeceras por persona, pacing adaptativo, jitter, decoys, sanitización ANSI CSI/OSC, protección CSV CWE-1236, generación **CPE 2.3**, correlación pasiva de **CVEs**, inferencia pasiva de SO (`OS Hint`), comando `--nmap-cmd` filtrado contra honeypots, firmas y señales agregadas de honeypot, **parser DER/X.509, SNI, SAN, wildcard matching, expiración, self-signed y ClientHello TLS 1.2**, extracción de versiones y formatos de reporte).
+- **13 pruebas de integración** en [`tests/pipeline_integration.rs`](tests/pipeline_integration.rs) verificando la traza cronológica del **Mediator** (`event_trace`), directivas reactivas (`PublicTargetHardeningMode`, `FirewallDropDetected`, `AdaptivePacingEngaged`, `PossibleHoneypotDetected`, `ConfirmedHoneypotDetected`, `EscalateCriticalAlert`), auditoría agresiva `-A` con CPE/CVE y filtrado anti-honeypot para Nmap, telemetría `mutable`, clasificación de honeypots, bloqueo `--protect-origin`, **captura TLS end-to-end contra un servidor loopback instrumentado**, sockets y códigos de salida (`0`, `1`, `2`).
 
 ---
 

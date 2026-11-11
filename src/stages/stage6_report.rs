@@ -82,6 +82,31 @@ pub fn render_report_with_stealth(
         }
         OutputFormat::Json => render_json_report(target, results, summary, elapsed, stealth),
         OutputFormat::Csv => render_csv_report(target, results),
+        OutputFormat::Grepable => render_grepable_report(target, results, summary),
+        OutputFormat::Silent => render_silent_report(target, results),
+    }
+}
+
+/// Build a honeypot-filtered Nmap follow-up command (`nmap -sV -sC -p <clean_ports> <ip>`)
+/// excluding any open port flagged as `PossibleHoneypot` or `Honeypot` by Stage 4.
+/// Never executes an external process; returns only the command string for the operator.
+pub fn build_clean_nmap_command(
+    target: &TargetInfo,
+    results: &[AuditedPortResult],
+) -> Option<String> {
+    let clean_ports: Vec<String> = results
+        .iter()
+        .filter(|r| r.state == PortState::Open && !r.honeypot.is_suspicious())
+        .map(|r| r.port.to_string())
+        .collect();
+    if clean_ports.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "nmap -sV -sC -p {} {}",
+            clean_ports.join(","),
+            target.primary_ip
+        ))
     }
 }
 
@@ -149,7 +174,7 @@ fn render_human_report(
         let _ = writeln!(
             out,
             "{} — {} ({}) [Scope: {}]",
-            colorize("TCPSCAN / HXSCAN v2.2 Audit Report", "1;36", c),
+            colorize("TCPSCAN / HXSCAN v3.0 Audit Report", "1;36", c),
             target.raw_input,
             target.primary_ip,
             target.scope
@@ -158,7 +183,7 @@ fn render_human_report(
         let _ = writeln!(
             out,
             "{} — {} [Scope: {}]",
-            colorize("TCPSCAN / HXSCAN v2.2 Audit Report", "1;36", c),
+            colorize("TCPSCAN / HXSCAN v3.0 Audit Report", "1;36", c),
             target.primary_ip,
             target.scope
         );
@@ -174,14 +199,20 @@ fn render_human_report(
             "No"
         }
     );
+    let os_suffix = summary
+        .os_hint
+        .as_deref()
+        .map(|os| format!(" | OS Hint: {os}"))
+        .unwrap_or_default();
     let _ = writeln!(
         out,
-        "Mode: {} | Persona: {} | AI-Filter: {} | Legitimacy: {}/100 ({})",
+        "Mode: {} | Persona: {} | AI-Filter: {} | Legitimacy: {}/100 ({}){}",
         stealth.mode,
         stealth.persona,
         if stealth.ai_filter { "on" } else { "off" },
         stealth.legitimacy_score,
-        stealth.legitimacy_grade
+        stealth.legitimacy_grade,
+        os_suffix
     );
     let _ = writeln!(out, "{sep}");
 
@@ -304,10 +335,36 @@ fn render_human_report(
         }
     }
 
+    let cpe_ports: Vec<&AuditedPortResult> = results
+        .iter()
+        .filter(|r| r.state == PortState::Open && (r.cpe.is_some() || !r.cves.is_empty()))
+        .collect();
+    if !cpe_ports.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{}",
+            colorize("[CPE & Vulnerability Intelligence (CVE)]", "1;31", c)
+        );
+        for r in &cpe_ports {
+            let cpe_str = r.cpe.as_deref().unwrap_or("-");
+            let cve_str = if r.cves.is_empty() {
+                "none".to_string()
+            } else {
+                r.cves.join(", ")
+            };
+            let _ = writeln!(
+                out,
+                "  • Port {:<5} ({}): CPE={} | CVEs={}",
+                r.port, r.service, cpe_str, cve_str
+            );
+        }
+    }
+
     let suspicious: Vec<&AuditedPortResult> = results
         .iter()
         .filter(|r| r.honeypot.is_suspicious())
         .collect();
+    let suspicious_count = suspicious.len();
     let _ = writeln!(
         out,
         "\n{}",
@@ -328,6 +385,29 @@ fn render_human_report(
             );
             if !r.honeypot.notes.is_empty() {
                 let _ = writeln!(out, "    {}", r.honeypot.notes);
+            }
+        }
+    }
+
+    if options.show_nmap_cmd {
+        let _ = writeln!(
+            out,
+            "\n{}",
+            colorize("[Honeypot-Filtered Nmap Handoff Command]", "1;32", c)
+        );
+        match build_clean_nmap_command(target, results) {
+            Some(cmd) => {
+                let _ = writeln!(
+                    out,
+                    "  • {}  (excluded {} suspected honeypot port(s))",
+                    cmd, suspicious_count
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "  • No clean non-honeypot open ports available for Nmap handoff."
+                );
             }
         }
     }
@@ -382,9 +462,10 @@ fn render_json_report(
     stealth: &StealthTelemetry,
 ) -> String {
     let mut out = String::with_capacity(2048);
+    let nmap_cmd = build_clean_nmap_command(target, results);
     let _ = writeln!(out, "{{");
     let _ = writeln!(out, "  \"scanner\": \"tcpscan-rs\",");
-    let _ = writeln!(out, "  \"version\": \"2.2.0\",");
+    let _ = writeln!(out, "  \"version\": \"3.0.0\",");
     let _ = writeln!(out, "  \"pattern\": \"Mediator\",");
     let _ = writeln!(
         out,
@@ -397,6 +478,11 @@ fn render_json_report(
         out,
         "  \"duration_ms\": {:.3},",
         elapsed.as_secs_f64() * 1000.0
+    );
+    let _ = writeln!(
+        out,
+        "  \"nmap_command\": {},",
+        json_optional_string(nmap_cmd.as_deref())
     );
     let _ = writeln!(
         out,
@@ -416,7 +502,7 @@ fn render_json_report(
     );
     let _ = writeln!(
         out,
-        "  \"summary\": {{ \"total_scanned\": {}, \"open\": {}, \"closed\": {}, \"filtered\": {}, \"errors\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"exposure_score\": {}, \"posture_grade\": \"{}\", \"firewall_detected\": {}, \"possible_honeypots\": {}, \"confirmed_honeypots\": {} }},",
+        "  \"summary\": {{ \"total_scanned\": {}, \"open\": {}, \"closed\": {}, \"filtered\": {}, \"errors\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"exposure_score\": {}, \"posture_grade\": \"{}\", \"firewall_detected\": {}, \"possible_honeypots\": {}, \"confirmed_honeypots\": {}, \"os_hint\": {} }},",
         summary.total_scanned,
         summary.open_count,
         summary.closed_count,
@@ -429,7 +515,8 @@ fn render_json_report(
         summary.posture_grade,
         summary.firewall_detected,
         summary.possible_honeypot_count,
-        summary.confirmed_honeypot_count
+        summary.confirmed_honeypot_count,
+        json_optional_string(summary.os_hint.as_deref())
     );
     let _ = writeln!(out, "  \"ports\": [");
 
@@ -458,6 +545,13 @@ fn render_json_report(
             escape_json_str(&r.honeypot.notes)
         );
         let version_json = json_optional_string(r.service_version.as_deref());
+        let cpe_json = json_optional_string(r.cpe.as_deref());
+        let cves_json = r
+            .cves
+            .iter()
+            .map(|cve| format!("\"{}\"", escape_json_str(cve)))
+            .collect::<Vec<_>>()
+            .join(",");
         let tls_json = match r.tls.as_ref() {
             Some(tls) => {
                 let sans_json = tls
@@ -484,11 +578,13 @@ fn render_json_report(
         };
         let _ = writeln!(
             out,
-            "    {{ \"port\": {}, \"state\": \"{}\", \"service\": \"{}\", \"service_version\": {}, \"risk\": \"{}\", \"category\": \"{}\", \"rtt_ms\": {}, \"banner\": {}, \"advisory\": \"{}\", \"tls\": {}, \"honeypot\": {} }}{}",
+            "    {{ \"port\": {}, \"state\": \"{}\", \"service\": \"{}\", \"service_version\": {}, \"cpe\": {}, \"cves\": [{}], \"risk\": \"{}\", \"category\": \"{}\", \"rtt_ms\": {}, \"banner\": {}, \"advisory\": \"{}\", \"tls\": {}, \"honeypot\": {} }}{}",
             r.port,
             r.state.as_str(),
             escape_json_str(&r.service),
             version_json,
+            cpe_json,
+            cves_json,
             r.risk.as_str(),
             escape_json_str(r.category),
             rtt_json,
@@ -528,7 +624,7 @@ pub fn sanitize_csv_cell(input: &str) -> String {
 
 fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> String {
     let mut out = String::from(
-        "target,ip,port,state,service,service_version,risk,category,rtt_ms,banner,advisory,tls_subject_cn,tls_issuer_cn,tls_self_signed,tls_hostname_mismatch,tls_days_until_expiry,tls_not_after,tls_sans,honeypot_verdict,honeypot_score,honeypot_behaviors\n",
+        "target,ip,port,state,service,service_version,risk,category,rtt_ms,banner,advisory,tls_subject_cn,tls_issuer_cn,tls_self_signed,tls_hostname_mismatch,tls_days_until_expiry,tls_not_after,tls_sans,honeypot_verdict,honeypot_score,honeypot_behaviors,cpe,cves\n",
     );
     for r in results {
         let rtt = r.rtt_ms().map(|ms| format!("{ms:.3}")).unwrap_or_default();
@@ -539,6 +635,8 @@ fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> Stri
         let version_cell = sanitize_csv_cell(r.service_version.as_deref().unwrap_or(""));
         let category_cell = sanitize_csv_cell(r.category);
         let honeypot_behaviors = sanitize_csv_cell(&r.honeypot.behavior_summary());
+        let cpe_cell = sanitize_csv_cell(r.cpe.as_deref().unwrap_or(""));
+        let cves_cell = sanitize_csv_cell(&r.cves.join("; "));
         let (tls_subject, tls_issuer, tls_self, tls_mismatch, tls_days, tls_not_after, tls_sans) =
             match r.tls.as_ref() {
                 Some(tls) => (
@@ -572,7 +670,7 @@ fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> Stri
             };
         let _ = writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             target_cell,
             target.primary_ip,
             r.port,
@@ -593,8 +691,57 @@ fn render_csv_report(target: &TargetInfo, results: &[AuditedPortResult]) -> Stri
             tls_sans,
             r.honeypot.verdict.as_str(),
             r.honeypot.score,
-            honeypot_behaviors
+            honeypot_behaviors,
+            cpe_cell,
+            cves_cell
         );
+    }
+    out
+}
+
+fn render_grepable_report(
+    target: &TargetInfo,
+    results: &[AuditedPortResult],
+    summary: &SecurityPostureSummary,
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "# tcpscan 3.0.0 grepable report for {} ({})",
+        target.raw_input, target.primary_ip
+    );
+    let ports_desc: Vec<String> = results
+        .iter()
+        .filter(|r| r.state == PortState::Open)
+        .map(|r| {
+            format!(
+                "{}/open/tcp//{}/{}/{}",
+                r.port,
+                r.service,
+                r.service_version.as_deref().unwrap_or(""),
+                r.honeypot.verdict.as_str()
+            )
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "Host: {} ({})\tStatus: Up\tPorts: {}\tIgnored State: closed ({}) filtered ({})",
+        target.primary_ip,
+        target.raw_input,
+        ports_desc.join(", "),
+        summary.closed_count,
+        summary.filtered_count
+    );
+    out
+}
+
+fn render_silent_report(target: &TargetInfo, results: &[AuditedPortResult]) -> String {
+    let mut out = String::new();
+    for r in results
+        .iter()
+        .filter(|r| r.state == PortState::Open && !r.honeypot.is_suspicious())
+    {
+        let _ = writeln!(out, "{}:{}", target.primary_ip, r.port);
     }
     out
 }
@@ -629,6 +776,7 @@ mod tests {
             firewall_detected: false,
             possible_honeypot_count: 0,
             confirmed_honeypot_count: 0,
+            os_hint: None,
         }
     }
 
@@ -641,6 +789,8 @@ mod tests {
                 state: PortState::Open,
                 service: "SSH".to_string(),
                 service_version: Some("OpenSSH_9.7p1".to_string()),
+                cpe: Some("cpe:2.3:a:openbsd:openssh:9.7p1:*:*:*:*:*:*:*".to_string()),
+                cves: vec!["CVE-2024-6387".to_string()],
                 banner: None,
                 rtt_micros: Some(400),
                 risk: RiskLevel::Low,
@@ -654,6 +804,8 @@ mod tests {
                 state: PortState::Closed,
                 service: "unknown".to_string(),
                 service_version: None,
+                cpe: None,
+                cves: Vec::new(),
                 banner: None,
                 rtt_micros: Some(100),
                 risk: RiskLevel::None,
@@ -668,6 +820,7 @@ mod tests {
             format: OutputFormat::Human,
             show_closed: false,
             use_color: false,
+            show_nmap_cmd: true,
         };
         let text = render_report(
             &target,
@@ -680,6 +833,8 @@ mod tests {
         assert!(text.contains("SSH"));
         assert!(!text.contains("80       closed"));
         assert!(text.contains("Scanned: 2 port(s) | Open: 1"));
+        assert!(text.contains("CVE-2024-6387"));
+        assert!(text.contains("nmap -sV -sC -p 22 127.0.0.1"));
     }
 
     #[test]
@@ -690,6 +845,8 @@ mod tests {
             state: PortState::Open,
             service: "HTTPS".to_string(),
             service_version: None,
+            cpe: None,
+            cves: Vec::new(),
             banner: None,
             rtt_micros: Some(300),
             risk: RiskLevel::Info,
@@ -712,6 +869,7 @@ mod tests {
             format: OutputFormat::Json,
             show_closed: false,
             use_color: false,
+            show_nmap_cmd: false,
         };
         let json = render_report(&target, &audited, &summary, Duration::from_millis(5), &opts);
         assert!(json.contains("\"scanner\": \"tcpscan-rs\""));
@@ -735,6 +893,8 @@ mod tests {
             state: PortState::Open,
             service: "HTTPS".to_string(),
             service_version: Some("nginx/1.26.2".to_string()),
+            cpe: None,
+            cves: Vec::new(),
             banner: None,
             rtt_micros: Some(300),
             risk: RiskLevel::Info,
@@ -757,6 +917,7 @@ mod tests {
             format: OutputFormat::Human,
             show_closed: false,
             use_color: false,
+            show_nmap_cmd: false,
         };
         let text = render_report(
             &target,
@@ -781,6 +942,8 @@ mod tests {
             state: PortState::Open,
             service: "HTTPS".to_string(),
             service_version: Some("nginx/1.26.2".to_string()),
+            cpe: Some("cpe:2.3:a:f5:nginx:1.26.2:*:*:*:*:*:*:*".to_string()),
+            cves: Vec::new(),
             banner: None,
             rtt_micros: Some(300),
             risk: RiskLevel::Info,
@@ -806,6 +969,7 @@ mod tests {
             format: OutputFormat::Csv,
             show_closed: false,
             use_color: false,
+            show_nmap_cmd: false,
         };
         let csv = render_report(&target, &audited, &summary, Duration::from_millis(5), &opts);
         let header = csv.lines().next().unwrap();
@@ -813,9 +977,58 @@ mod tests {
         assert!(header.contains("tls_subject_cn"));
         assert!(header.contains("tls_self_signed"));
         assert!(header.contains("tls_sans"));
+        assert!(header.contains("cpe,cves"));
         assert!(csv.contains("\"portal.example.test\""));
         assert!(csv.contains("\"portal.example.test; www.example.test\""));
         assert!(csv.contains(",\"nginx/1.26.2\","));
         assert!(csv.contains(",false,false,1000,"));
+    }
+
+    #[test]
+    fn test_nmap_handoff_filters_out_honeypots_and_silent_mode() {
+        let target = sample_target();
+        let audited = vec![
+            AuditedPortResult {
+                port: 22,
+                state: PortState::Open,
+                service: "SSH".to_string(),
+                service_version: Some("OpenSSH 9.6p1".to_string()),
+                cpe: None,
+                cves: Vec::new(),
+                banner: None,
+                rtt_micros: Some(300),
+                risk: RiskLevel::Low,
+                category: "Remote Access",
+                advisory: String::new(),
+                tls: None,
+                honeypot: HoneypotAssessment::clean(22),
+            },
+            AuditedPortResult {
+                port: 2222,
+                state: PortState::Open,
+                service: "SSH".to_string(),
+                service_version: None,
+                cpe: None,
+                cves: Vec::new(),
+                banner: None,
+                rtt_micros: Some(500),
+                risk: RiskLevel::Low,
+                category: "Remote Access",
+                advisory: String::new(),
+                tls: None,
+                honeypot: HoneypotAssessment {
+                    port: 2222,
+                    verdict: HoneypotVerdict::Honeypot,
+                    score: 85,
+                    behaviors: Vec::new(),
+                    notes: "Cowrie".to_string(),
+                },
+            },
+        ];
+        let cmd = build_clean_nmap_command(&target, &audited).unwrap();
+        assert_eq!(cmd, "nmap -sV -sC -p 22 127.0.0.1");
+
+        let silent = render_silent_report(&target, &audited);
+        assert_eq!(silent, "127.0.0.1:22\n");
     }
 }

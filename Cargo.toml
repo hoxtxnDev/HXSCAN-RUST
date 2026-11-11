@@ -1,9 +1,9 @@
 [package]
 name = "tcpscan"
-version = "2.2.0"
+version = "3.0.0"
 edition = "2021"
 authors = ["hoxtxnDev"]
-description = "Staged Mediator TCP port scanner with stealth/mutable traffic blending, anti-AI legitimacy envelope and behavioral honeypot classification (HXSCAN Rust Edition)"
+description = "Ultimate Recon & Staged Mediator TCP scanner: Nmap/Naabu/RustScan ergonomics, TLS/X.509, CPE/CVE correlation, CIDR multi-target, stealth/mutable & honeypot filtering (HXSCAN Rust Edition)"
 license = "MIT"
 repository = "https://github.com/hoxtxnDev/HXSCAN-RUST"
 readme = "README.md"

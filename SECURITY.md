@@ -23,7 +23,7 @@ Durante la auditoría forense de objetos Git históricos del repositorio origina
 
 Cuando un escáner de ciberseguridad interactúa con objetivos no confiables (servidores maliciosos, *honeypots*, *tarpits* o dominios controlados por atacantes), el propio equipo que ejecuta el escaneo puede ser víctima de ataques de rebote o agotamiento de recursos. Se implementaron **6 defensas activas** para el equipo de origen:
 
-> Los controles de legitimidad, mutación de tráfico, reconocimiento TLS/X.509 y clasificación de honeypots introducidos en las versiones 2.1 y 2.2 se documentan por separado en la **Sección 3**.
+> Los controles de legitimidad, mutación de tráfico, reconocimiento TLS/X.509, clasificación de honeypots, generación pasiva de CPE 2.3/CVEs, puente `--nmap-cmd` sin ejecución de subprocesos y límites multi-target (`MAX_MULTI_TARGETS = 1024`) introducidos en las versiones 2.1, 2.2 y 3.0 se documentan por separado en la **Sección 3**.
 
 ### 2.1. Escudo Anti-DNS Rebinding y Bloqueo de IPs Peligrosas (`Stage 1`)
 - **Riesgo (CWE-350 / SSRF contra el host local)**: Un atacante configura un dominio externo para que resuelva a `127.0.0.1`, `::1`, `0.0.0.0` o `169.254.169.254`, engañando al analista para que escanee su propio equipo de origen o servicios *link-local*.
