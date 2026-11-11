@@ -429,6 +429,16 @@ impl ScanMediator for ScanController {
             .map(|target| target.raw_input.as_str())
             .unwrap_or("localhost");
 
+        let stealth = &self.config.scanner.stealth;
+
+        // Ghost mode: 0 application bytes are ever transmitted (pure passive listen).
+        if stealth.mode == StealthMode::Ghost {
+            return FingerprintColleague::inspect_live_stream_passive(
+                stream,
+                self.config.banner_timeout,
+            );
+        }
+
         // TLS-like ports speak first only after a ClientHello. Capture certificate
         // metadata on the same socket, keeping ScannerColleague unaware of TLS.
         if is_tls_like_port(port) {
@@ -445,8 +455,9 @@ impl ScanMediator for ScanController {
 
         // Mediator delegates banner inspection to FingerprintColleague without ScannerColleague
         // ever importing or knowing about FingerprintColleague.
-        let stealth = &self.config.scanner.stealth;
-        if stealth.mode == StealthMode::Normal {
+        if stealth.mode == StealthMode::Normal
+            && stealth.persona == crate::mediator::TrafficPersona::Generic
+        {
             return FingerprintColleague::inspect_live_stream(
                 port,
                 stream,

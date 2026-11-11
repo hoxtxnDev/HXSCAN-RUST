@@ -184,6 +184,8 @@ pub enum StealthMode {
     Stealth,
     /// Corporate blend mode: human-like bursts, enterprise personas and adaptive pacing.
     Mutable,
+    /// Zero-payload passive listen mode: shuffled, jittered, decoy-interleaved, 0 bytes transmitted.
+    Ghost,
 }
 
 impl StealthMode {
@@ -192,6 +194,7 @@ impl StealthMode {
             Self::Normal => "normal",
             Self::Stealth => "stealth",
             Self::Mutable => "mutable",
+            Self::Ghost => "ghost",
         }
     }
 }

@@ -56,6 +56,8 @@ pub enum ScanProfile {
     Stealth,
     /// Corporate blend mode: enterprise persona, human-like bursts, adaptive pacing and banners.
     Mutable,
+    /// Zero-payload passive listen mode: shuffled, jittered, decoys, 0 bytes transmitted.
+    Ghost,
     /// Deep cybersecurity audit (common ports, active banner grabbing, 1 retry on filtered ports).
     Audit,
 }
@@ -69,9 +71,10 @@ impl ScanProfile {
             "full" | "all" => Ok(Self::Full),
             "stealth" | "sneaky" | "quiet" => Ok(Self::Stealth),
             "mutable" | "corporate" | "blend" | "camouflage" => Ok(Self::Mutable),
+            "ghost" | "passive" | "zero-payload" | "fantasma" | "indetectable" => Ok(Self::Ghost),
             "audit" | "sec" | "security" => Ok(Self::Audit),
             other => Err(format!(
-                "Unknown scan profile '{other}'. Valid profiles: default, quick, full, stealth, mutable, audit"
+                "Unknown scan profile '{other}'. Valid profiles: default, quick, full, stealth, mutable, ghost, audit"
             )),
         }
     }
@@ -171,11 +174,13 @@ ARGUMENTS & FLAGS:
       --en, --english       Switch output language to English (default)
       --es, --spanish       Switch output language to Spanish (Español)
       --help-es             Show full CLI help in Spanish (Español)
-      --profile <NAME>      Scan preset: default | quick | full | stealth | mutable | audit
+      --profile <NAME>      Scan preset: default | quick | full | stealth | mutable | ghost | audit
       --full                Shorthand for --profile full (ports 1-65535, 512 threads)
       --stealth             Low-noise mode: shuffled ports, jitter, rate ceiling, no banners
       --mutable             Corporate blend mode: enterprise persona, human-like bursts,
                             adaptive backoff and realistic HTTP headers
+      --ghost, --passive    Zero-payload passive mode: 0 bytes transmitted, passive banner listen,
+                            shuffled ports, high jitter, decoys & adaptive backoff
       --threads <N>         Maximum concurrent worker threads (1..=2048, default: 100)
       --timeout <SEC>       Socket connection timeout in seconds (0.01..=60.0, default: 1.0)
       --retries <N>         Retries for timed-out/filtered ports (0..=5, default: 0)
@@ -261,10 +266,12 @@ ARGUMENTOS Y OPCIONES:
       --es, --spanish       Cambiar idioma de salida a Espanol
       --en, --english       Cambiar idioma de salida a Ingles (por defecto)
       --help-es             Mostrar esta ayuda completa en Espanol
-      --profile <NOMBRE>    Perfil: default | quick | full | stealth | mutable | audit
+      --profile <NOMBRE>    Perfil: default | quick | full | stealth | mutable | ghost | audit
       --full                Atajo para --profile full (puertos 1-65535, 512 hilos)
       --stealth             Modo sigilo: puertos barajados, jitter, limite PPS, sin banners
       --mutable             Modo mutable corporativo: identidad empresarial, rafagas humanas y backoff
+      --ghost, --fantasma   Modo fantasma cero-payload: 0 bytes enviados, escucha pasiva de banners,
+                            puertos barajados, jitter alto, senuelos y backoff adaptativo
       --threads <N>         Hilos concurrentes maximos (1..=2048, por defecto: 100)
       --timeout <SEG>       Timeout de conexion en segundos (0.01..=60.0, por defecto: 1.0)
       --retries <N>         Reintentos para puertos filtrados (0..=5, por defecto: 0)
@@ -405,6 +412,24 @@ fn profile_defaults(profile: ScanProfile) -> ProfileDefaults {
             burst_pause_ms: 500,
             adaptive: true,
             decoy: 0,
+            ai_filter: true,
+        },
+        ScanProfile::Ghost => ProfileDefaults {
+            ports: DEFAULT_PORTS_SPEC,
+            threads: 2,
+            timeout_ms: 1200,
+            retries: 0,
+            delay_ms: 180,
+            banners: true,
+            shuffle: true,
+            mode: StealthMode::Ghost,
+            persona: TrafficPersona::CorporateWorkstation,
+            jitter_ms: 220,
+            max_pps: 2.5,
+            burst_size: 2,
+            burst_pause_ms: 650,
+            adaptive: true,
+            decoy: 2,
             ai_filter: true,
         },
         ScanProfile::Audit => ProfileDefaults {
@@ -564,6 +589,9 @@ where
             "--mutable" | "--mutable-mode" | "--blend" => {
                 profile = ScanProfile::Mutable;
             }
+            "--ghost" | "--passive" | "--undetectable" | "--fantasma" => {
+                profile = ScanProfile::Ghost;
+            }
             "-sV" | "--service-version" => {
                 grab_banners = Some(true);
             }
@@ -571,7 +599,9 @@ where
                 // Accepted for Nmap CLI compatibility
             }
             "-A" | "--aggressive" => {
-                profile = ScanProfile::Audit;
+                if profile == ScanProfile::Default {
+                    profile = ScanProfile::Audit;
+                }
                 grab_banners = Some(true);
                 show_nmap_cmd = true;
             }
@@ -1169,6 +1199,15 @@ mod tests {
             assert!(text.contains("ARGUMENTOS Y OPCIONES:"));
         } else {
             panic!("Expected CliAction::ShowHelp");
+        }
+
+        let ghost_cfg = parse_cli_args(["127.0.0.1", "--ghost", "-A"]).unwrap();
+        if let CliAction::Run(cfg) = ghost_cfg {
+            assert_eq!(cfg.scanner.stealth.mode, StealthMode::Ghost);
+            assert!(cfg.grab_banners);
+            assert!(cfg.report_options.show_nmap_cmd);
+        } else {
+            panic!("Expected CliAction::Run");
         }
     }
 }

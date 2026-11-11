@@ -75,7 +75,8 @@ pub use stages::stage2_scanner::{
 };
 pub use stages::stage3_fingerprint::{
     enrich_probe_results, get_service_name, grab_banner_from_rw, grab_banner_from_stream,
-    infer_service_from_banner, sanitize_banner, FingerprintColleague, SERVICE_TABLE,
+    grab_banner_passive_from_rw, infer_service_from_banner, sanitize_banner, FingerprintColleague,
+    SERVICE_TABLE,
 };
 pub use stages::stage4_honeypot::{analyze_honeypots, evaluate_honeypot_port, HoneypotColleague};
 pub use stages::stage5_audit::{

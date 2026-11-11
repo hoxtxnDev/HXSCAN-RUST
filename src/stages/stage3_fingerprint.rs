@@ -123,6 +123,16 @@ impl FingerprintColleague {
         grab_banner_from_rw_with_persona(port, stream, persona, host, seed)
     }
 
+    /// Zero-payload passive variant used by the Mediator in `Ghost` mode (`--ghost` / `--passive`).
+    /// Never writes a single byte to the socket; only reads server-initiated banners (SSH, SMTP, FTP, MySQL, etc.).
+    pub fn inspect_live_stream_passive(
+        stream: &mut TcpStream,
+        banner_timeout: Duration,
+    ) -> Option<String> {
+        let _ = stream.set_read_timeout(Some(banner_timeout));
+        grab_banner_passive_from_rw(stream)
+    }
+
     /// Enrich all raw probe results stored in the Mediator and emit [`ScanEvent::FingerprintingCompleted`].
     ///
     /// TLS certificates captured during Stage 2 stream mediation are attached here,
@@ -497,6 +507,19 @@ pub fn grab_banner_from_stream(
     let _ = stream.set_read_timeout(Some(banner_timeout));
     let _ = stream.set_write_timeout(Some(banner_timeout));
     grab_banner_from_rw(port, stream)
+}
+
+/// Zero-payload passive banner reader (`0 bytes transmitted`).
+/// Reads server-initiated greetings (`SSH`, `SMTP`, `FTP`, `POP3`, `IMAP`, `MySQL`, `Telnet`)
+/// without sending any application-layer probe bytes.
+pub fn grab_banner_passive_from_rw<S: Read>(stream: &mut S) -> Option<String> {
+    let mut buf = [0u8; 512];
+    if let Ok(n) = stream.read(&mut buf) {
+        if n > 0 {
+            return sanitize_banner(&buf[..n]);
+        }
+    }
+    None
 }
 
 /// Execute Stage 3 enrichment across a batch of [`RawProbeResult`] items.

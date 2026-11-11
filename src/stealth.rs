@@ -278,6 +278,7 @@ pub fn assess_legitimacy(
         StealthMode::Normal => {}
         StealthMode::Stealth => score += 20,
         StealthMode::Mutable => score += 25,
+        StealthMode::Ghost => score += 30,
     }
 
     if config.ai_filter {
