@@ -12,9 +12,9 @@ use std::fmt::Write as FmtWrite;
 use std::time::Duration;
 
 use crate::mediator::{
-    AuditedPortResult, ComponentId, HoneypotVerdict, MediatorDirective, OutputFormat, PortState,
-    ReportOptions, RiskLevel, ScanController, ScanEvent, ScanMediator, SecurityPostureSummary,
-    StealthTelemetry, TargetInfo,
+    AuditedPortResult, ComponentId, HoneypotVerdict, Language, MediatorDirective, OutputFormat,
+    PortState, ReportOptions, RiskLevel, ScanController, ScanEvent, ScanMediator,
+    SecurityPostureSummary, StealthTelemetry, TargetInfo,
 };
 
 /// **Colleague 6 (`ReportColleague`)**: Multi-Format Telemetry & Reporting Colleague.
@@ -149,6 +149,29 @@ fn honeypot_badge(verdict: HoneypotVerdict, use_color: bool) -> String {
     }
 }
 
+/// Render the 7-bit ASCII/ANSI banner for `HXSCAN-RUST // TCPSCAN v3.0.0`.
+/// Uses pure 7-bit ASCII characters so it renders without corruption on Windows CMD/PowerShell, Linux, and macOS.
+pub fn render_ascii_banner(lang: Language, use_color: bool) -> String {
+    let art = r#"  _   _ __  __ ____   ____    _    _   _      ____  _   _ ____ _____
+ | | | |\ \/ // ___| / ___|  / \  | \ | |    |  _ \| | | / ___|_   _|
+ | |_| | \  / \___ \| |     / _ \ |  \| |____| |_) | | | \___ \ | |
+ |  _  | /  \  ___) | |___ / ___ \| |\  |____|  _ <| |_| |___) || |
+ |_| |_|/_/\_\|____/ \____/_/   \_\_| \_|    |_| \_\\___/|____/ |_|"#;
+    let subtitle = match lang {
+        Language::English => {
+            "  >> HXSCAN-RUST // TCPSCAN v3.0.0 — Ultimate Recon & Hybrid Attack-Path Engine [EN/ES] <<"
+        }
+        Language::Spanish => {
+            "  >> HXSCAN-RUST // TCPSCAN v3.0.0 — Motor Definitivo de Recon Hibrido y Rutas de Ataque <<"
+        }
+    };
+    format!(
+        "{}\n{}",
+        colorize(art, "1;36", use_color),
+        colorize(subtitle, "1;33", use_color)
+    )
+}
+
 fn render_human_report(
     target: &TargetInfo,
     results: &[AuditedPortResult],
@@ -159,6 +182,7 @@ fn render_human_report(
 ) -> String {
     let mut out = String::with_capacity(2048);
     let c = options.use_color;
+    let es = options.language == Language::Spanish;
     let sep = "=".repeat(78);
     let subsep = "-".repeat(78);
 
@@ -169,51 +193,93 @@ fn render_human_report(
         summary.total_scanned as f64
     };
 
-    let _ = writeln!(out, "\n{sep}");
+    let _ = writeln!(out, "\n{}", render_ascii_banner(options.language, c));
+    let _ = writeln!(out, "{sep}");
+    let title = if es {
+        "TCPSCAN / HXSCAN v3.0 Reporte de Auditoría"
+    } else {
+        "TCPSCAN / HXSCAN v3.0 Audit Report"
+    };
+    let scope_label = if es { "Alcance" } else { "Scope" };
     if target.raw_input != target.primary_ip.to_string() {
         let _ = writeln!(
             out,
-            "{} — {} ({}) [Scope: {}]",
-            colorize("TCPSCAN / HXSCAN v3.0 Audit Report", "1;36", c),
+            "{} — {} ({}) [{}: {}]",
+            colorize(title, "1;36", c),
             target.raw_input,
             target.primary_ip,
+            scope_label,
             target.scope
         );
     } else {
         let _ = writeln!(
             out,
-            "{} — {} [Scope: {}]",
-            colorize("TCPSCAN / HXSCAN v3.0 Audit Report", "1;36", c),
+            "{} — {} [{}: {}]",
+            colorize(title, "1;36", c),
             target.primary_ip,
+            scope_label,
             target.scope
         );
     }
-    let _ = writeln!(
-        out,
-        "Duration: {:.2}ms | Throughput: {:.0} ports/s | Firewall Drop Detected: {}",
-        elapsed.as_secs_f64() * 1000.0,
-        rate,
-        if summary.firewall_detected {
-            "Yes"
-        } else {
-            "No"
-        }
-    );
+    if es {
+        let _ = writeln!(
+            out,
+            "Duración: {:.2}ms | Velocidad: {:.0} puertos/s | Bloqueo de Firewall: {}",
+            elapsed.as_secs_f64() * 1000.0,
+            rate,
+            if summary.firewall_detected {
+                "Sí"
+            } else {
+                "No"
+            }
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "Duration: {:.2}ms | Throughput: {:.0} ports/s | Firewall Drop Detected: {}",
+            elapsed.as_secs_f64() * 1000.0,
+            rate,
+            if summary.firewall_detected {
+                "Yes"
+            } else {
+                "No"
+            }
+        );
+    }
     let os_suffix = summary
         .os_hint
         .as_deref()
-        .map(|os| format!(" | OS Hint: {os}"))
+        .map(|os| {
+            if es {
+                format!(" | SO Inferido: {os}")
+            } else {
+                format!(" | OS Hint: {os}")
+            }
+        })
         .unwrap_or_default();
-    let _ = writeln!(
-        out,
-        "Mode: {} | Persona: {} | AI-Filter: {} | Legitimacy: {}/100 ({}){}",
-        stealth.mode,
-        stealth.persona,
-        if stealth.ai_filter { "on" } else { "off" },
-        stealth.legitimacy_score,
-        stealth.legitimacy_grade,
-        os_suffix
-    );
+    if es {
+        let _ = writeln!(
+            out,
+            "Modo: {} | Persona: {} | Filtro-IA: {} | Legitimidad: {}/100 ({}){}",
+            stealth.mode,
+            stealth.persona,
+            if stealth.ai_filter { "on" } else { "off" },
+            stealth.legitimacy_score,
+            stealth.legitimacy_grade,
+            os_suffix
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "Mode: {} | Persona: {} | AI-Filter: {} | Legitimacy: {}/100 ({}){}",
+            stealth.mode,
+            stealth.persona,
+            if stealth.ai_filter { "on" } else { "off" },
+            stealth.legitimacy_score,
+            stealth.legitimacy_grade,
+            os_suffix
+        );
+    }
     let _ = writeln!(out, "{sep}");
 
     let open_ports: Vec<&AuditedPortResult> = results
@@ -222,13 +288,25 @@ fn render_human_report(
         .collect();
 
     if open_ports.is_empty() && !options.show_closed {
-        let _ = writeln!(out, "No open ports found.");
+        if es {
+            let _ = writeln!(out, "No se encontraron puertos abiertos.");
+        } else {
+            let _ = writeln!(out, "No open ports found.");
+        }
     } else {
-        let _ = writeln!(
-            out,
-            "\n{:<8} {:<10} {:<10} {:<16} {:<18} {:<8} {:<10} Banner / Details",
-            "Port", "State", "RTT", "Service", "Version", "Risk", "Honeypot"
-        );
+        if es {
+            let _ = writeln!(
+                out,
+                "\n{:<8} {:<10} {:<10} {:<16} {:<18} {:<8} {:<10} Banner / Detalles",
+                "Puerto", "Estado", "RTT", "Servicio", "Versión", "Riesgo", "Honeypot"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "\n{:<8} {:<10} {:<10} {:<16} {:<18} {:<8} {:<10} Banner / Details",
+                "Port", "State", "RTT", "Service", "Version", "Risk", "Honeypot"
+            );
+        }
         let _ = writeln!(out, "{subsep}");
 
         for r in &open_ports {
@@ -277,17 +355,19 @@ fn render_human_report(
     }
 
     if !open_ports.is_empty() {
-        let _ = writeln!(
-            out,
-            "\n{}",
-            colorize("[Security Audit & Hardening Advisories]", "1;33", c)
-        );
+        let sec_hdr = if es {
+            "[Auditoría de Seguridad y Recomendaciones de Hardening]"
+        } else {
+            "[Security Audit & Hardening Advisories]"
+        };
+        let port_lbl = if es { "Puerto" } else { "Port" };
+        let _ = writeln!(out, "\n{}", colorize(sec_hdr, "1;33", c));
         for r in &open_ports {
             if !r.advisory.is_empty() {
                 let _ = writeln!(
                     out,
-                    "  • Port {:<5} ({}): [{}] {}",
-                    r.port, r.service, r.risk, r.advisory
+                    "  • {} {:<5} ({}): [{}] {}",
+                    port_lbl, r.port, r.service, r.risk, r.advisory
                 );
             }
         }
@@ -295,11 +375,12 @@ fn render_human_report(
 
     let tls_ports: Vec<&AuditedPortResult> = results.iter().filter(|r| r.tls.is_some()).collect();
     if !tls_ports.is_empty() {
-        let _ = writeln!(
-            out,
-            "\n{}",
-            colorize("[TLS Certificate Intelligence]", "1;36", c)
-        );
+        let tls_hdr = if es {
+            "[Inteligencia de Certificados TLS]"
+        } else {
+            "[TLS Certificate Intelligence]"
+        };
+        let _ = writeln!(out, "\n{}", colorize(tls_hdr, "1;36", c));
         for r in &tls_ports {
             if let Some(ref tls) = r.tls {
                 let expiry = match (tls.not_after.as_deref(), tls.days_until_expiry) {
@@ -340,11 +421,12 @@ fn render_human_report(
         .filter(|r| r.state == PortState::Open && (r.cpe.is_some() || !r.cves.is_empty()))
         .collect();
     if !cpe_ports.is_empty() {
-        let _ = writeln!(
-            out,
-            "\n{}",
-            colorize("[CPE & Vulnerability Intelligence (CVE)]", "1;31", c)
-        );
+        let cpe_hdr = if es {
+            "[Inteligencia CPE y Vulnerabilidades (CVE)]"
+        } else {
+            "[CPE & Vulnerability Intelligence (CVE)]"
+        };
+        let _ = writeln!(out, "\n{}", colorize(cpe_hdr, "1;31", c));
         for r in &cpe_ports {
             let cpe_str = r.cpe.as_deref().unwrap_or("-");
             let cve_str = if r.cves.is_empty() {
@@ -365,13 +447,18 @@ fn render_human_report(
         .filter(|r| r.honeypot.is_suspicious())
         .collect();
     let suspicious_count = suspicious.len();
-    let _ = writeln!(
-        out,
-        "\n{}",
-        colorize("[Honeypot & Deception Behavior Analysis]", "1;35", c)
-    );
+    let hp_hdr = if es {
+        "[Análisis Conductual de Honeypots y Engaño]"
+    } else {
+        "[Honeypot & Deception Behavior Analysis]"
+    };
+    let _ = writeln!(out, "\n{}", colorize(hp_hdr, "1;35", c));
     if suspicious.is_empty() {
-        let _ = writeln!(out, "  No deception indicators detected.");
+        if es {
+            let _ = writeln!(out, "  No se detectaron indicadores de engaño (honeypot).");
+        } else {
+            let _ = writeln!(out, "  No deception indicators detected.");
+        }
     } else {
         for r in suspicious {
             let _ = writeln!(
@@ -390,16 +477,25 @@ fn render_human_report(
     }
 
     if !summary.recon.host_role.is_empty() && summary.open_count > 0 {
-        let _ = writeln!(
-            out,
-            "\n{}",
-            colorize("[Hybrid Recon & Attack Path Synthesis]", "1;34", c)
-        );
-        let _ = writeln!(
-            out,
-            "  • Host Role: {} | Topology: {}",
-            summary.recon.host_role, summary.recon.network_topology
-        );
+        let recon_hdr = if es {
+            "[Recon Híbrido y Síntesis de Rutas de Ataque]"
+        } else {
+            "[Hybrid Recon & Attack Path Synthesis]"
+        };
+        let _ = writeln!(out, "\n{}", colorize(recon_hdr, "1;34", c));
+        if es {
+            let _ = writeln!(
+                out,
+                "  • Rol del Host: {} | Topología: {}",
+                summary.recon.host_role, summary.recon.network_topology
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "  • Host Role: {} | Topology: {}",
+                summary.recon.host_role, summary.recon.network_topology
+            );
+        }
         if let Some(ref split) = summary.recon.rtt_split_anomaly {
             let _ = writeln!(out, "  • [!] Proxy / DNAT Split: {split}");
         }
@@ -416,40 +512,71 @@ fn render_human_report(
     }
 
     if options.show_nmap_cmd {
-        let _ = writeln!(
-            out,
-            "\n{}",
-            colorize("[Honeypot-Filtered Nmap Handoff Command]", "1;32", c)
-        );
+        let nmap_hdr = if es {
+            "[Comando Nmap Sugerido (Filtrado contra Honeypots)]"
+        } else {
+            "[Honeypot-Filtered Nmap Handoff Command]"
+        };
+        let _ = writeln!(out, "\n{}", colorize(nmap_hdr, "1;32", c));
         match build_clean_nmap_command(target, results) {
             Some(cmd) => {
-                let _ = writeln!(
-                    out,
-                    "  • {}  (excluded {} suspected honeypot port(s))",
-                    cmd, suspicious_count
-                );
+                if es {
+                    let _ = writeln!(
+                        out,
+                        "  • {}  (excluidos {} puerto(s) honeypot sospechosos)",
+                        cmd, suspicious_count
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "  • {}  (excluded {} suspected honeypot port(s))",
+                        cmd, suspicious_count
+                    );
+                }
             }
             None => {
-                let _ = writeln!(
-                    out,
-                    "  • No clean non-honeypot open ports available for Nmap handoff."
-                );
+                if es {
+                    let _ = writeln!(
+                        out,
+                        "  • No hay puertos limpios (no-honeypot) disponibles para Nmap."
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "  • No clean non-honeypot open ports available for Nmap handoff."
+                    );
+                }
             }
         }
     }
 
-    let _ = writeln!(
-        out,
-        "\nScanned: {} port(s) | Open: {} | Closed: {} | Filtered: {} | Honeypots: {} confirmed / {} possible | Posture Grade: {} (Score: {}/100)",
-        summary.total_scanned,
-        summary.open_count,
-        summary.closed_count,
-        summary.filtered_count,
-        summary.confirmed_honeypot_count,
-        summary.possible_honeypot_count,
-        summary.posture_grade,
-        summary.exposure_score
-    );
+    if es {
+        let _ = writeln!(
+            out,
+            "\nEscaneados: {} puerto(s) | Abiertos: {} | Cerrados: {} | Filtrados: {} | Honeypots: {} confirmados / {} posibles | Grado de Postura: {} (Puntaje: {}/100)",
+            summary.total_scanned,
+            summary.open_count,
+            summary.closed_count,
+            summary.filtered_count,
+            summary.confirmed_honeypot_count,
+            summary.possible_honeypot_count,
+            summary.posture_grade,
+            summary.exposure_score
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "\nScanned: {} port(s) | Open: {} | Closed: {} | Filtered: {} | Honeypots: {} confirmed / {} possible | Posture Grade: {} (Score: {}/100)",
+            summary.total_scanned,
+            summary.open_count,
+            summary.closed_count,
+            summary.filtered_count,
+            summary.confirmed_honeypot_count,
+            summary.possible_honeypot_count,
+            summary.posture_grade,
+            summary.exposure_score
+        );
+    }
     let _ = writeln!(out, "{sep}\n");
 
     out
@@ -867,6 +994,7 @@ mod tests {
             show_closed: false,
             use_color: false,
             show_nmap_cmd: true,
+            language: Language::English,
         };
         let text = render_report(
             &target,
@@ -916,6 +1044,7 @@ mod tests {
             show_closed: false,
             use_color: false,
             show_nmap_cmd: false,
+            language: Language::English,
         };
         let json = render_report(&target, &audited, &summary, Duration::from_millis(5), &opts);
         assert!(json.contains("\"scanner\": \"tcpscan-rs\""));
@@ -964,6 +1093,7 @@ mod tests {
             show_closed: false,
             use_color: false,
             show_nmap_cmd: false,
+            language: Language::English,
         };
         let text = render_report(
             &target,
@@ -1016,6 +1146,7 @@ mod tests {
             show_closed: false,
             use_color: false,
             show_nmap_cmd: false,
+            language: Language::English,
         };
         let csv = render_report(&target, &audited, &summary, Duration::from_millis(5), &opts);
         let header = csv.lines().next().unwrap();
@@ -1120,6 +1251,7 @@ mod tests {
                 show_closed: false,
                 use_color: false,
                 show_nmap_cmd: false,
+                language: Language::English,
             },
         );
         assert!(human.contains("[Hybrid Recon & Attack Path Synthesis]"));
@@ -1140,6 +1272,7 @@ mod tests {
                 show_closed: false,
                 use_color: false,
                 show_nmap_cmd: false,
+                language: Language::English,
             },
         );
         assert!(json.contains("\"host_role\": \"Web + Database Monolith (Co-Resident Stack)\""));
@@ -1147,5 +1280,39 @@ mod tests {
             "\"shadow_assets\": [\"staging.internal.example.com\",\"vault.internal.example.com\"]"
         ));
         assert!(json.contains("\"toxic_combinations\": [\"Web + Data Store Co-Residency\"]"));
+    }
+
+    #[test]
+    fn test_spanish_language_human_report_and_ascii_banner() {
+        let target = sample_target();
+        let audited = vec![AuditedPortResult {
+            port: 22,
+            state: PortState::Open,
+            service: "SSH".to_string(),
+            service_version: Some("OpenSSH_9.7p1".to_string()),
+            cpe: Some("cpe:2.3:a:openbsd:openssh:9.7p1:*:*:*:*:*:*:*".to_string()),
+            cves: vec!["CVE-2024-6387".to_string()],
+            banner: None,
+            rtt_micros: Some(400),
+            risk: RiskLevel::Low,
+            category: "Remote Access",
+            advisory: "Verify key auth".to_string(),
+            tls: None,
+            honeypot: HoneypotAssessment::clean(22),
+        }];
+        let summary = sample_summary(1, 0);
+        let opts = ReportOptions {
+            format: OutputFormat::Human,
+            show_closed: false,
+            use_color: false,
+            show_nmap_cmd: true,
+            language: Language::Spanish,
+        };
+        let text = render_report(&target, &audited, &summary, Duration::from_millis(8), &opts);
+        assert!(text.contains("TCPSCAN / HXSCAN v3.0 Reporte de Auditoría"));
+        assert!(text.contains("Motor Definitivo de Recon Hibrido"));
+        assert!(text.contains("[Auditoría de Seguridad y Recomendaciones de Hardening]"));
+        assert!(text.contains("[Comando Nmap Sugerido (Filtrado contra Honeypots)]"));
+        assert!(text.contains("Escaneados: 1 puerto(s) | Abiertos: 1"));
     }
 }

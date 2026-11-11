@@ -719,6 +719,33 @@ pub enum OutputFormat {
     Silent,
 }
 
+/// Supported interface and report languages (`English` and `Spanish`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Language {
+    #[default]
+    English,
+    Spanish,
+}
+
+impl Language {
+    pub fn from_str_code(input: &str) -> Result<Self, String> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "en" | "eng" | "english" | "ingles" | "inglés" => Ok(Self::English),
+            "es" | "esp" | "spanish" | "espanol" | "español" => Ok(Self::Spanish),
+            other => Err(format!(
+                "Unsupported language '{other}'. Valid languages: 'es' (Spanish) or 'en' (English)"
+            )),
+        }
+    }
+
+    pub fn as_code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Spanish => "es",
+        }
+    }
+}
+
 /// Options controlling `ReportColleague` (Stage 6) rendering.
 #[derive(Debug, Clone)]
 pub struct ReportOptions {
@@ -727,6 +754,8 @@ pub struct ReportOptions {
     pub use_color: bool,
     /// Render the honeypot-filtered Nmap follow-up command (`--nmap-cmd` / `-A`).
     pub show_nmap_cmd: bool,
+    /// Display language for human reports and interactive console (`English` or `Spanish`).
+    pub language: Language,
 }
 
 impl Default for ReportOptions {
@@ -736,6 +765,7 @@ impl Default for ReportOptions {
             show_closed: false,
             use_color: true,
             show_nmap_cmd: false,
+            language: Language::English,
         }
     }
 }

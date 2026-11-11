@@ -1,5 +1,10 @@
 <pre align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=0,2,3,6&height=200&section=header&text=HXSCAN-RUST%20(tcpscan)&fontSize=54&fontAlignY=35&desc=Staged%20Mediator%20TCP%20Scanner%20%7C%20Stealth%20%26%20Honeypot%20Analysis&descAlignY=58" />
+  _   _ __  __ ____   ____    _    _   _      ____  _   _ ____ _____
+ | | | |\ \/ // ___| / ___|  / \  | \ | |    |  _ \| | | / ___|_   _|
+ | |_| | \  / \___ \| |     / _ \ |  \| |____| |_) | | | \___ \ | |
+ |  _  | /  \  ___) | |___ / ___ \| |\  |____|  _ &lt;| |_| |___) || |
+ |_| |_|/_/\_\|____/ \____/_/   \_\_| \_|    |_| \_\\___/|____/ |_|
+  &gt;&gt; TCPSCAN v3.0.0 — Ultimate Recon &amp; Hybrid Attack-Path Engine [EN/ES] &lt;&lt;
 </pre>
 
 <p align="center">
@@ -45,7 +50,7 @@
 | 🤝 **Puente `--nmap-cmd` Anti-Honeypot** | Genera en el reporte el comando exacto `nmap -sV -sC -p <puertos_limpios> <ip>` **excluyendo automáticamente cualquier puerto marcado como honeypot** por Stage 4 (sin ejecutar procesos externos). |
 | 🌐 **Multi-Target (CIDR, Rangos y `-iL`)** | Escanea subredes IPv4 (`192.168.1.0/24`, `/22..=/32`), rangos (`10.0.0.1-20`), listas separadas por coma y archivos `-iL targets.txt` (acotado a `MAX_MULTI_TARGETS = 1024`). |
 | 🧠 **Hybrid Recon & Attack Path Synthesis** | **Exclusivo de `tcpscan`**: infiere el rol arquitectónico del host (`Active Directory DC`, `Web + DB Monolith`, `Container Control Node`, `Bastion`), detecta **splits de RTT por Reverse-Proxy / DNAT** entre puertos abiertos, extrae **Shadow Assets / FQDNs internos** desde SANs X.509 y banners, y correlaciona **combinaciones tóxicas multi-puerto**. |
-| 🪟 **Consola Interactiva en Windows** | Al abrir `tcpscan.exe` con doble clic sin argumentos, permanece abierto en un shell interactivo `tcpscan>` listo para auditar. |
+| 🪟 **Consola Interactiva + Progreso `[ENTER]` + Idioma (`ES`/`EN`)** | Al abrir `tcpscan.exe` permanece en el shell interactivo `tcpscan [ES]>`. Presiona `[ENTER]` durante cualquier escaneo largo para ver barra de progreso `%`, puertos abiertos en vivo y ETA; y cambia de idioma al instante con `--es` / `--en` (`--lang es` / `--lang en` o `lang es` / `lang en`). |
 
 ---
 

@@ -52,17 +52,17 @@ pub mod stealth;
 pub mod tls;
 
 pub use cli::{
-    parse_cli_args, CliAction, ScanProfile, MAX_BURST_PAUSE_MS, MAX_BURST_SIZE, MAX_DECOY_PROBES,
-    MAX_DELAY_MS, MAX_JITTER_MS, MAX_PPS, MAX_RETRIES, MAX_SAFE_THREADS, MAX_TIMEOUT_SECS,
-    MIN_TIMEOUT_SECS,
+    ascii_banner, help_text, help_text_es, parse_cli_args, CliAction, ScanProfile,
+    MAX_BURST_PAUSE_MS, MAX_BURST_SIZE, MAX_DECOY_PROBES, MAX_DELAY_MS, MAX_JITTER_MS, MAX_PPS,
+    MAX_RETRIES, MAX_SAFE_THREADS, MAX_TIMEOUT_SECS, MIN_TIMEOUT_SECS,
 };
 pub use mediator::{
     AddressScope, AuditedPortResult, ComponentId, EnrichedPortResult, HoneypotAssessment,
-    HoneypotBehavior, HoneypotVerdict, MediatedEventRecord, MediatorDirective, MediatorState,
-    OutputFormat, PipelineConfig, PipelineOutput, PortState, RawProbeResult, ReconIntelligence,
-    ReportOptions, RiskLevel, ScanController, ScanEvent, ScanMediator, ScannerConfig,
-    SecurityPostureSummary, StealthConfig, StealthMode, StealthTelemetry, TargetInfo,
-    TlsCertificateInfo, TrafficPersona,
+    HoneypotBehavior, HoneypotVerdict, Language, MediatedEventRecord, MediatorDirective,
+    MediatorState, OutputFormat, PipelineConfig, PipelineOutput, PortState, RawProbeResult,
+    ReconIntelligence, ReportOptions, RiskLevel, ScanController, ScanEvent, ScanMediator,
+    ScannerConfig, SecurityPostureSummary, StealthConfig, StealthMode, StealthTelemetry,
+    TargetInfo, TlsCertificateInfo, TrafficPersona,
 };
 pub use stages::stage1_discovery::{
     expand_target_inputs, parse_port_spec, parse_port_spec_with_exclusions, resolve_target,
@@ -85,8 +85,8 @@ pub use stages::stage5_audit::{
     synthesize_recon_intelligence, AuditColleague,
 };
 pub use stages::stage6_report::{
-    build_clean_nmap_command, render_report, render_report_with_stealth, sanitize_csv_cell,
-    ReportColleague,
+    build_clean_nmap_command, render_ascii_banner, render_report, render_report_with_stealth,
+    sanitize_csv_cell, ReportColleague,
 };
 pub use stages::ScanPipeline;
 pub use stealth::{
@@ -204,20 +204,18 @@ pub fn parse_interactive_line(line: &str) -> Vec<String> {
     tokens
 }
 
-/// Interactive console mode launched when `tcpscan.exe` is opened without arguments
-/// (e.g. double-clicked on Windows Explorer) so the terminal window stays open.
-pub fn run_interactive_shell() -> i32 {
-    use std::io::{self, Write};
-
-    let mut stdout = io::stdout();
-    let mut stderr = io::stderr();
-
-    let banner = "\
+/// Format the interactive console welcome header in the selected [`Language`].
+pub fn format_interactive_welcome(lang: Language, use_color: bool) -> String {
+    let logo = render_ascii_banner(lang, use_color);
+    match lang {
+        Language::English => format!(
+            "{logo}
 ==============================================================================
-  TCPSCAN / HXSCAN-RUST v3.0.0 — Interactive Console Mode (Mediator Pattern)
+  TCPSCAN / HXSCAN-RUST v3.0.0 — Interactive Console Mode [Language: EN]
 ==============================================================================
   Authorized security auditing only. Type a target or command below:
-  (Tip: during a long scan, press [ENTER] at any time to see % progress & ETA)
+  • Press [ENTER] during any running scan to view real-time % progress & ETA.
+  • Type 'lang es' (or 'es') to switch to Spanish | 'lang en' for English.
 
   Examples:
     127.0.0.1                           (Scan default critical ports on localhost)
@@ -227,18 +225,60 @@ pub fn run_interactive_shell() -> i32 {
     192.168.1.1-5 --top-ports 20        (Scan IP range on top 20 ports)
     10.0.0.1 --stealth                  (Low-noise jittered scan)
     10.0.0.1 --mutable                  (Corporate workstation persona)
+    lang es                             (Cambiar idioma a Español)
     help                                (Show full CLI flags & options)
     exit                                (Close console)
 ------------------------------------------------------------------------------
-";
-    let _ = stdout.write_all(banner.as_bytes());
+"
+        ),
+        Language::Spanish => format!(
+            "{logo}
+==============================================================================
+  TCPSCAN / HXSCAN-RUST v3.0.0 — Modo Consola Interactiva [Idioma: ES]
+==============================================================================
+  Solo para auditorías de seguridad autorizadas. Escribe un objetivo o comando:
+  • Presiona [ENTER] durante un escaneo para ver el % de avance y ETA en vivo.
+  • Escribe 'lang en' (o 'en') para Inglés | 'lang es' (o 'es') para Español.
+
+  Ejemplos:
+    127.0.0.1                           (Escanear puertos críticos en localhost)
+    127.0.0.1 -sV -A                    (Auditoría total + CPE/CVE + comando Nmap)
+    scanme.nmap.org 22,80,443           (Escanear host público de prueba de Nmap)
+    example.com:443                     (Inspeccionar certificado TLS 1.2 / X.509)
+    192.168.1.1-5 --top-ports 20        (Escanear rango IP en el top 20 de puertos)
+    10.0.0.1 --stealth                  (Modo sigiloso con jitter anti-IDS)
+    10.0.0.1 --mutable                  (Camuflaje de estación corporativa)
+    lang en                             (Switch language to English)
+    ayuda                               (Ver todas las opciones y flags CLI)
+    salir                               (Cerrar consola)
+------------------------------------------------------------------------------
+"
+        ),
+    }
+}
+
+/// Interactive console mode launched when `tcpscan.exe` is opened without arguments
+/// (e.g. double-clicked on Windows Explorer) so the terminal window stays open.
+pub fn run_interactive_shell() -> i32 {
+    use std::io::{self, Write};
+
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    let mut shell_lang = Language::Spanish;
+
+    let welcome = format_interactive_welcome(shell_lang, true);
+    let _ = stdout.write_all(welcome.as_bytes());
     let _ = stdout.flush();
 
     let mut last_exit_code = 0;
     let rx_mutex = global_stdin_receiver();
 
     loop {
-        let _ = stdout.write_all(b"\ntcpscan> ");
+        let prompt = match shell_lang {
+            Language::English => "\ntcpscan [EN]> ",
+            Language::Spanish => "\ntcpscan [ES]> ",
+        };
+        let _ = stdout.write_all(prompt.as_bytes());
         let _ = stdout.flush();
 
         let line = match rx_mutex.lock().ok().and_then(|rx| rx.recv().ok()) {
@@ -253,8 +293,26 @@ pub fn run_interactive_shell() -> i32 {
 
         match trimmed.to_ascii_lowercase().as_str() {
             "exit" | "quit" | "q" | "salir" => break,
+            "es" | "esp" | "spanish" | "espanol" | "español" | "lang es" | "idioma es" => {
+                shell_lang = Language::Spanish;
+                let msg = format_interactive_welcome(shell_lang, true);
+                let _ = stdout.write_all(msg.as_bytes());
+                let _ = stdout.flush();
+                continue;
+            }
+            "en" | "eng" | "english" | "ingles" | "inglés" | "lang en" | "idioma en" => {
+                shell_lang = Language::English;
+                let msg = format_interactive_welcome(shell_lang, true);
+                let _ = stdout.write_all(msg.as_bytes());
+                let _ = stdout.flush();
+                continue;
+            }
             "help" | "ayuda" | "?" => {
-                let (_, help_out, _) = run_from_args(["--help"]);
+                let flag = match shell_lang {
+                    Language::English => "--help",
+                    Language::Spanish => "--help-es",
+                };
+                let (_, help_out, _) = run_from_args([flag]);
                 let _ = stdout.write_all(help_out.as_bytes());
                 let _ = stdout.flush();
                 continue;
@@ -265,7 +323,7 @@ pub fn run_interactive_shell() -> i32 {
                 let _ = stdout.flush();
                 continue;
             }
-            "cls" | "clear" => {
+            "cls" | "clear" | "limpiar" => {
                 let _ = stdout.write_all(b"\x1b[2J\x1b[H");
                 let _ = stdout.flush();
                 continue;
@@ -273,9 +331,29 @@ pub fn run_interactive_shell() -> i32 {
             _ => {}
         }
 
-        let tokens = parse_interactive_line(trimmed);
+        let mut tokens = parse_interactive_line(trimmed);
         if tokens.is_empty() {
             continue;
+        }
+
+        let has_explicit_lang = tokens.iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "--es"
+                    | "-es"
+                    | "--spanish"
+                    | "--espanol"
+                    | "--en"
+                    | "-en"
+                    | "--english"
+                    | "--ingles"
+                    | "--lang"
+                    | "-L"
+                    | "--help-es"
+            )
+        });
+        if !has_explicit_lang && shell_lang == Language::Spanish {
+            tokens.push("--es".to_string());
         }
 
         let (code, out_str, err_str) = run_from_args(&tokens);
@@ -312,5 +390,18 @@ mod interactive_tests {
             parse_interactive_line("hxscan.exe scanme.nmap.org"),
             vec!["scanme.nmap.org"]
         );
+    }
+
+    #[test]
+    fn test_format_interactive_welcome_bilingual_and_banner() {
+        let es = format_interactive_welcome(Language::Spanish, false);
+        assert!(es.contains("Modo Consola Interactiva [Idioma: ES]"));
+        assert!(es.contains("lang en"));
+        assert!(es.contains("Motor Definitivo de Recon Hibrido"));
+
+        let en = format_interactive_welcome(Language::English, false);
+        assert!(en.contains("Interactive Console Mode [Language: EN]"));
+        assert!(en.contains("lang es"));
+        assert!(en.contains("Ultimate Recon & Hybrid Attack-Path Engine"));
     }
 }

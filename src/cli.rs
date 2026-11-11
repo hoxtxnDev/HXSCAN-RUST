@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use crate::mediator::{
-    OutputFormat, PipelineConfig, ReportOptions, ScannerConfig, StealthConfig, StealthMode,
-    TrafficPersona,
+    Language, OutputFormat, PipelineConfig, ReportOptions, ScannerConfig, StealthConfig,
+    StealthMode, TrafficPersona,
 };
 use crate::stages::stage1_discovery::{DEFAULT_PORTS_SPEC, QUICK_PORTS_SPEC};
 
@@ -104,11 +104,34 @@ pub enum CliAction {
     ShowVersion(String),
 }
 
-/// Return the formatted CLI help text.
-pub fn help_text() -> String {
-    r#"tcpscan (HXSCAN-RUST v3.0.0) — Ultimate Recon & Staged Mediator TCP Scanner
+/// Return the crisp 7-bit ASCII banner (renders identically across Windows CMD/PowerShell, Linux & macOS).
+pub fn ascii_banner(lang: Language) -> &'static str {
+    match lang {
+        Language::English => {
+            r#"  _   _ __  __ ____   ____    _    _   _      ____  _   _ ____ _____
+ | | | |\ \/ // ___| / ___|  / \  | \ | |    |  _ \| | | / ___|_   _|
+ | |_| | \  / \___ \| |     / _ \ |  \| |____| |_) | | | \___ \ | |
+ |  _  | /  \  ___) | |___ / ___ \| |\  |____|  _ <| |_| |___) || |
+ |_| |_|/_/\_\|____/ \____/_/   \_\_| \_|    |_| \_\\___/|____/ |_|
+  >> HXSCAN-RUST // TCPSCAN v3.0.0 — Ultimate Recon & Hybrid Attack-Path Engine [EN/ES] <<"#
+        }
+        Language::Spanish => {
+            r#"  _   _ __  __ ____   ____    _    _   _      ____  _   _ ____ _____
+ | | | |\ \/ // ___| / ___|  / \  | \ | |    |  _ \| | | / ___|_   _|
+ | |_| | \  / \___ \| |     / _ \ |  \| |____| |_) | | | \___ \ | |
+ |  _  | /  \  ___) | |___ / ___ \| |\  |____|  _ <| |_| |___) || |
+ |_| |_|/_/\_\|____/ \____/_/   \_\_| \_|    |_| \_\\___/|____/ |_|
+  >> HXSCAN-RUST // TCPSCAN v3.0.0 — Motor Definitivo de Recon Hibrido y Rutas de Ataque <<"#
+        }
+    }
+}
 
-USAGE:
+/// Return the formatted CLI help text in English.
+pub fn help_text() -> String {
+    format!(
+        "{}\n\n{}",
+        ascii_banner(Language::English),
+        r#"USAGE:
   tcpscan <target|CIDR|range> [ports] [OPTIONS]
   tcpscan -t <target> [-p <ports>] [OPTIONS]
   tcpscan -iL <targets.txt> [ports] [OPTIONS]
@@ -122,6 +145,7 @@ SIMPLICITY & NMAP / NAABU / RUSTSCAN EXAMPLES:
   tcpscan 10.0.0.5 -A -oJ audit.json       # Aggressive audit (versions, TLS, CPE/CVE) saved to JSON
   tcpscan 10.0.0.7 --stealth               # Low-noise jittered scan, no active banners
   tcpscan 10.0.0.7 --mutable               # Corporate blend mode (persona + adaptive pacing)
+  tcpscan 127.0.0.1 --es                   # Generate report and telemetry in Spanish (Español)
 
 ARGUMENTS & FLAGS:
   -t, --target <SPEC>       Target IP, hostname, host:port, CIDR (192.168.1.0/24), or range (10.0.0.1-20)
@@ -143,6 +167,10 @@ ARGUMENTS & FLAGS:
   -oC <FILE>                Save CWE-1236-sanitized CSV report to FILE
   -oG <FILE>                Save grepable report to FILE
   -o, --output <FILE>       Save report in the active format to FILE
+  -L, --lang <en|es>        Output language: English (en) or Spanish (es)
+      --en, --english       Switch output language to English (default)
+      --es, --spanish       Switch output language to Spanish (Español)
+      --help-es             Show full CLI help in Spanish (Español)
       --profile <NAME>      Scan preset: default | quick | full | stealth | mutable | audit
       --full                Shorthand for --profile full (ports 1-65535, 512 threads)
       --stealth             Low-noise mode: shuffled ports, jitter, rate ceiling, no banners
@@ -173,8 +201,11 @@ ARGUMENTS & FLAGS:
       --csv                 Output CSV table (protected against CWE-1236 formula injection)
       --no-color            Disable ANSI color output
   -v, --verbose             Enable stage-by-stage Mediator diagnostic logging to stderr
-  -h, --help                Show this help message
+  -h, --help                Show this help message (add --es for Spanish)
   -V, --version             Show version information
+
+LIVE PROGRESS:
+  Press [ENTER] at any time during a scan to view real-time % progress, rate, and ETA.
 
 ETHICS:
   Stealth/mutable/anti-AI controls are ONLY for authorized security audits.
@@ -183,7 +214,85 @@ ETHICS:
 EXIT CODES:
   0 = Open port(s) found | 1 = Configuration/DNS/Safety error | 2 = No open ports | 130 = Interrupted
 "#
-    .to_string()
+    )
+}
+
+/// Return the formatted CLI help text in Spanish (`--help-es` or `--help --es`).
+pub fn help_text_es() -> String {
+    format!(
+        "{}\n\n{}",
+        ascii_banner(Language::Spanish),
+        r#"USO:
+  tcpscan <objetivo|CIDR|rango> [puertos] [OPCIONES]
+  tcpscan -t <objetivo> [-p <puertos>] [OPCIONES]
+  tcpscan -iL <objetivos.txt> [puertos] [OPCIONES]
+
+EJEMPLOS RAPIDOS (ESTILO NMAP / NAABU / RUSTSCAN):
+  tcpscan 127.0.0.1                        # Escaneo rapido en puertos criticos por defecto
+  tcpscan scanme.nmap.org 22,80,443        # Objetivo + puertos posicionales (sin flags)
+  tcpscan 192.168.1.0/24 22,80,445         # Escaneo de subred CIDR (/22..=/32)
+  tcpscan 10.0.0.1-25 -F -sV --es          # Rango IP + top-20 rapido + versiones/TLS en Espanol
+  tcpscan 10.0.0.5 -p- -T4 --nmap-cmd --es # Barrido de 65,535 puertos + comando Nmap sin honeypots
+  tcpscan 10.0.0.5 -A -oJ auditoria.json   # Auditoria completa (versiones, TLS, CPE/CVE) a JSON
+  tcpscan 10.0.0.7 --stealth --es          # Modo sigiloso con jitter, sin banners activos
+  tcpscan 10.0.0.7 --mutable --es          # Modo camuflaje corporativo (persona + ritmo adaptativo)
+
+ARGUMENTOS Y OPCIONES:
+  -t, --target <SPEC>       IP, dominio, host:puerto, CIDR (192.168.1.0/24) o rango (10.0.0.1-20)
+  -iL, --input-list <ARCH>  Leer lista de objetivos desde un archivo
+  -p, --ports <SPEC>        Puertos/rangos (ej. 22,80,8000-8100), -p- (1-65535), o preset
+  -p-                       Atajo Nmap para escanear los 65,535 puertos
+  -F, --fast, --quick       Escaneo rapido de los 20 puertos mas criticos (timeout 400ms)
+      --top-ports <N>       Escanear los N puertos mas frecuentes (1..=65535)
+      --exclude-ports <SP>  Excluir puertos o rangos especificos (ej. 21,8080-8090)
+  -sV                       Activar extraccion de versiones, banners y reconocimiento TLS/X.509
+  -sT, -Pn, -n              Aceptados por compatibilidad con Nmap (TCP connect directo)
+  -A                        Auditoria agresiva: versiones (-sV), TLS, CPE/CVE y --nmap-cmd
+  -T0 .. -T5                Plantillas de tiempo Nmap (T0/T1=paranoico, T2=sigilo, T3=normal, T4/T5=rapido)
+      --nmap-cmd            Generar comando Nmap sugerido excluyendo puertos honeypot detectados
+      --silent              Salida minima 'ip:puerto' para tuberias Unix/SIEM (estilo Naabu)
+      --grepable            Salida grepable compatible con Nmap
+  -oN <ARCHIVO>             Guardar reporte humano en ARCHIVO
+  -oJ <ARCHIVO>             Guardar reporte JSON estructurado en ARCHIVO
+  -oC <ARCHIVO>             Guardar reporte CSV sanitizado (anti CWE-1236) en ARCHIVO
+  -oG <ARCHIVO>             Guardar reporte grepable en ARCHIVO
+  -o, --output <ARCHIVO>    Guardar reporte en el formato activo en ARCHIVO
+  -L, --lang <en|es>        Idioma del reporte y consola: Ingles (en) o Espanol (es)
+      --es, --spanish       Cambiar idioma de salida a Espanol
+      --en, --english       Cambiar idioma de salida a Ingles (por defecto)
+      --help-es             Mostrar esta ayuda completa en Espanol
+      --profile <NOMBRE>    Perfil: default | quick | full | stealth | mutable | audit
+      --full                Atajo para --profile full (puertos 1-65535, 512 hilos)
+      --stealth             Modo sigilo: puertos barajados, jitter, limite PPS, sin banners
+      --mutable             Modo mutable corporativo: identidad empresarial, rafagas humanas y backoff
+      --threads <N>         Hilos concurrentes maximos (1..=2048, por defecto: 100)
+      --timeout <SEG>       Timeout de conexion en segundos (0.01..=60.0, por defecto: 1.0)
+      --retries <N>         Reintentos para puertos filtrados (0..=5, por defecto: 0)
+      --persona <NOMBRE>    Identidad de trafico: generic | corporate | browser |
+                            windows-update | backup-agent
+  -b, --banner              Activar captura de banners (por defecto: true)
+      --no-banner           Desactivar captura de banners (solo handshake TCP)
+      --shuffle             Aleatorizar el orden de puertos para reducir firma secuencial en IDS
+      --protect-origin      Bloquear escaneo del propio host local (127.0.0.0/8, ::1)
+      --open                Mostrar solo puertos abiertos en la tabla (por defecto)
+      --show-closed, --all  Mostrar tambien puertos cerrados y filtrados
+      --json                Generar reporte JSON para SIEM/SOAR
+      --csv                 Generar tabla CSV (protegida contra inyeccion de formulas CWE-1236)
+      --no-color            Desactivar colores ANSI
+  -v, --verbose             Mostrar telemetria etapa por etapa del Mediador en stderr
+  -h, --help                Mostrar mensaje de ayuda
+  -V, --version             Mostrar version del programa
+
+PROGRESO EN VIVO:
+  Presiona [ENTER] en cualquier momento durante un escaneo para ver el % de avance y ETA.
+
+ETICA:
+  Los controles stealth/mutable/anti-AI son UNICAMENTE para auditorias de seguridad autorizadas.
+
+CODIGOS DE SALIDA:
+  0 = Puertos abiertos detectados | 1 = Error de configuracion/seguridad | 2 = Sin puertos abiertos
+"#
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -359,13 +468,34 @@ where
     let mut format = OutputFormat::Human;
     let mut use_color = true;
     let mut verbose = false;
+    let mut language = Language::English;
+    let mut requested_help = false;
     let mut positional: Vec<String> = Vec::new();
 
     let mut i = 0;
     while i < tokens.len() {
         let arg = tokens[i].as_str();
         match arg {
-            "-h" | "--help" => return Ok(CliAction::ShowHelp(help_text())),
+            "-h" | "--help" => {
+                requested_help = true;
+            }
+            "--help-es" | "-help-es" => {
+                language = Language::Spanish;
+                requested_help = true;
+            }
+            "-L" | "--lang" | "--language" | "--idioma" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err("Option '-L/--lang' requires 'en' or 'es'".to_string());
+                }
+                language = Language::from_str_code(&tokens[i])?;
+            }
+            "--es" | "--spanish" | "--espanol" | "-es" => {
+                language = Language::Spanish;
+            }
+            "--en" | "--english" | "--ingles" | "-en" => {
+                language = Language::English;
+            }
             "-V" | "--version" => {
                 return Ok(CliAction::ShowVersion(
                     "tcpscan 3.0.0 (HXSCAN-RUST Ultimate Recon Edition)".to_string(),
@@ -720,6 +850,13 @@ where
         i += 1;
     }
 
+    if requested_help {
+        return Ok(CliAction::ShowHelp(match language {
+            Language::English => help_text(),
+            Language::Spanish => help_text_es(),
+        }));
+    }
+
     if target.is_none() && !positional.is_empty() {
         target = Some(positional.remove(0));
     }
@@ -812,6 +949,7 @@ where
             show_closed,
             use_color,
             show_nmap_cmd,
+            language,
         },
     };
 
@@ -999,6 +1137,38 @@ mod tests {
             assert_eq!(cfg.scanner.threads, 10);
         } else {
             panic!("Expected CliAction::Run");
+        }
+    }
+
+    #[test]
+    fn test_language_switching_flags_and_spanish_help() {
+        let action_es = parse_cli_args(["127.0.0.1", "--es"]).unwrap();
+        if let CliAction::Run(cfg) = action_es {
+            assert_eq!(cfg.report_options.language, Language::Spanish);
+        } else {
+            panic!("Expected CliAction::Run");
+        }
+
+        let action_lang = parse_cli_args(["127.0.0.1", "--lang", "spanish"]).unwrap();
+        if let CliAction::Run(cfg) = action_lang {
+            assert_eq!(cfg.report_options.language, Language::Spanish);
+        } else {
+            panic!("Expected CliAction::Run");
+        }
+
+        let action_en = parse_cli_args(["127.0.0.1", "--es", "--en"]).unwrap();
+        if let CliAction::Run(cfg) = action_en {
+            assert_eq!(cfg.report_options.language, Language::English);
+        } else {
+            panic!("Expected CliAction::Run");
+        }
+
+        let help_es = parse_cli_args(["--help", "--es"]).unwrap();
+        if let CliAction::ShowHelp(text) = help_es {
+            assert!(text.contains("HXSCAN"));
+            assert!(text.contains("ARGUMENTOS Y OPCIONES:"));
+        } else {
+            panic!("Expected CliAction::ShowHelp");
         }
     }
 }
