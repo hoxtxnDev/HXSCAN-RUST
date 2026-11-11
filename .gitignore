@@ -1,0 +1,12 @@
+# Rust / Cargo build artifacts
+/target/
+
+# Python legacy artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# IDEs & OS
+.vscode/
+.idea/
+.DS_Store
