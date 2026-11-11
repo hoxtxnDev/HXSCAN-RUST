@@ -9,9 +9,10 @@
 //!
 //! **Decoupling Guarantee**: Zero imports from `stage1`, `stage3`, `stage4`, or `stage5`.
 
-use std::io::{self, ErrorKind};
+use std::io::{self, BufRead, ErrorKind, IsTerminal};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -150,6 +151,81 @@ where
     }
 }
 
+/// Shared non-blocking line channel over `stdin` so both interactive console mode (`tcpscan>`)
+/// and live scan Enter-key progress queries can read `stdin` without thread contention.
+pub fn global_stdin_receiver() -> &'static Mutex<mpsc::Receiver<String>> {
+    static STDIN_RX: OnceLock<Mutex<mpsc::Receiver<String>>> = OnceLock::new();
+    STDIN_RX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        let _ = thread::Builder::new()
+            .name("tcpscan-stdin-listener".to_string())
+            .spawn(move || {
+                let stdin = io::stdin();
+                let mut reader = stdin.lock();
+                let mut buf = String::new();
+                loop {
+                    buf.clear();
+                    match reader.read_line(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            if tx.send(buf.clone()).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        Mutex::new(rx)
+    })
+}
+
+/// Format an Nmap-style real-time scan progress line when the operator presses `[ENTER]`
+/// during a running scan.
+pub fn format_scan_progress(
+    completed: usize,
+    total: usize,
+    open_found: usize,
+    filtered_found: usize,
+    elapsed: Duration,
+) -> String {
+    let safe_total = total.max(1);
+    let clamped_done = completed.min(safe_total);
+    let pct = ((clamped_done as f64) / (safe_total as f64)) * 100.0;
+    let bar_width = 20usize;
+    let filled = (((pct / 100.0) * (bar_width as f64)).round() as usize).min(bar_width);
+    let bar = format!(
+        "[{}{}]",
+        "#".repeat(filled),
+        "-".repeat(bar_width.saturating_sub(filled))
+    );
+
+    let elapsed_secs = elapsed.as_secs_f64();
+    let rate = if elapsed_secs > 0.001 {
+        (clamped_done as f64) / elapsed_secs
+    } else {
+        clamped_done as f64
+    };
+    let remaining = safe_total.saturating_sub(clamped_done);
+    let eta_secs = if rate > 0.0 {
+        (remaining as f64) / rate
+    } else {
+        0.0
+    };
+
+    format!(
+        "[Avance] {:>5.1}% {} {}/{} puertos | Abiertos: {} | Filtrados: {} | {:.0} puertos/s | {:.1}s | ETA: ~{:.1}s",
+        pct,
+        bar,
+        clamped_done,
+        safe_total,
+        open_found,
+        filtered_found,
+        rate,
+        elapsed_secs,
+        eta_secs
+    )
+}
+
 /// Core lock-free concurrent work distributor over `ports` using a custom port prober closure.
 pub fn execute_scan_stage_with_prober<P>(
     ports: &[u16],
@@ -164,10 +240,16 @@ where
         return Vec::new();
     }
 
-    let max_threads = ports.len().min(2048);
+    let total_real_ports = ports.len();
+    let max_threads = total_real_ports.min(2048);
     let worker_count = config.threads.clamp(1, max_threads);
     let cursor = AtomicUsize::new(0);
-    let per_worker_cap = (ports.len() / worker_count) + 2;
+    let completed_probes = AtomicUsize::new(0);
+    let open_found = AtomicUsize::new(0);
+    let filtered_found = AtomicUsize::new(0);
+    let scan_done = AtomicBool::new(false);
+    let per_worker_cap = (total_real_ports / worker_count) + 2;
+    let stage_start = Instant::now();
 
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -176,12 +258,57 @@ where
     // Decoys are interleaved against the same primary target and discarded afterwards.
     let work_plan = build_work_plan(ports, config.stealth.decoy_probes, seed);
 
-    let mut all_results: Vec<RawProbeResult> = Vec::with_capacity(ports.len());
+    let mut all_results: Vec<RawProbeResult> = Vec::with_capacity(total_real_ports);
+    let enable_enter_progress = io::stdin().is_terminal() && total_real_ports > 1;
 
     thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
         let prober_ref = &prober;
         let plan_ref = &work_plan;
+        let completed_ref = &completed_probes;
+        let open_ref = &open_found;
+        let filtered_ref = &filtered_found;
+        let done_ref = &scan_done;
+
+        let progress_handle = if enable_enter_progress {
+            Some(scope.spawn(move || {
+                // Only activate interactive Enter listener if the scan takes longer than 350ms
+                for _ in 0..14 {
+                    if done_ref.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+                if done_ref.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                eprintln!(
+                    "[i] Escaneo en progreso ({total_real_ports} puertos)... presiona [ENTER] para ver el % de avance y ETA."
+                );
+
+                let rx_mutex = global_stdin_receiver();
+                while !done_ref.load(Ordering::Relaxed) {
+                    let pressed_enter = rx_mutex
+                        .lock()
+                        .ok()
+                        .and_then(|rx| rx.recv_timeout(Duration::from_millis(40)).ok())
+                        .is_some();
+                    if pressed_enter && !done_ref.load(Ordering::Relaxed) {
+                        let status = format_scan_progress(
+                            completed_ref.load(Ordering::Relaxed),
+                            total_real_ports,
+                            open_ref.load(Ordering::Relaxed),
+                            filtered_ref.load(Ordering::Relaxed),
+                            stage_start.elapsed(),
+                        );
+                        eprintln!("{status}");
+                    }
+                }
+            }))
+        } else {
+            None
+        };
 
         for worker_idx in 0..worker_count {
             let cursor_ref = &cursor;
@@ -208,6 +335,16 @@ where
 
                     // Decoy results never reach the Mediator or the audit.
                     if !is_decoy {
+                        match res.state {
+                            PortState::Open => {
+                                open_ref.fetch_add(1, Ordering::Relaxed);
+                            }
+                            PortState::Filtered => {
+                                filtered_ref.fetch_add(1, Ordering::Relaxed);
+                            }
+                            _ => {}
+                        }
+                        completed_ref.fetch_add(1, Ordering::Relaxed);
                         local_results.push(res);
                     }
 
@@ -225,6 +362,10 @@ where
             if let Ok(mut worker_vec) = handle.join() {
                 all_results.append(&mut worker_vec);
             }
+        }
+        done_ref.store(true, Ordering::Relaxed);
+        if let Some(mon) = progress_handle {
+            let _ = mon.join();
         }
     });
 
@@ -380,5 +521,17 @@ mod tests {
             None,
         );
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_format_scan_progress_percentage_bar_and_eta() {
+        let status = format_scan_progress(450, 1000, 3, 12, Duration::from_secs(3));
+        assert!(status.contains("45.0%"));
+        assert!(status.contains("[#########-----------]"));
+        assert!(status.contains("450/1000 puertos"));
+        assert!(status.contains("Abiertos: 3"));
+        assert!(status.contains("Filtrados: 12"));
+        assert!(status.contains("150 puertos/s"));
+        assert!(status.contains("ETA: ~3.7s"));
     }
 }

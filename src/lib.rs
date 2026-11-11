@@ -70,8 +70,8 @@ pub use stages::stage1_discovery::{
     TOP_PORTS_RANKED,
 };
 pub use stages::stage2_scanner::{
-    classify_connect_error, execute_scan_stage, execute_scan_stage_with_prober, probe_single_port,
-    ScannerColleague,
+    classify_connect_error, execute_scan_stage, execute_scan_stage_with_prober,
+    format_scan_progress, global_stdin_receiver, probe_single_port, ScannerColleague,
 };
 pub use stages::stage3_fingerprint::{
     enrich_probe_results, get_service_name, grab_banner_from_rw, grab_banner_from_stream,
@@ -207,17 +207,17 @@ pub fn parse_interactive_line(line: &str) -> Vec<String> {
 /// Interactive console mode launched when `tcpscan.exe` is opened without arguments
 /// (e.g. double-clicked on Windows Explorer) so the terminal window stays open.
 pub fn run_interactive_shell() -> i32 {
-    use std::io::{self, BufRead, Write};
+    use std::io::{self, Write};
 
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
-    let stdin = io::stdin();
 
     let banner = "\
 ==============================================================================
   TCPSCAN / HXSCAN-RUST v3.0.0 — Interactive Console Mode (Mediator Pattern)
 ==============================================================================
   Authorized security auditing only. Type a target or command below:
+  (Tip: during a long scan, press [ENTER] at any time to see % progress & ETA)
 
   Examples:
     127.0.0.1                           (Scan default critical ports on localhost)
@@ -235,19 +235,16 @@ pub fn run_interactive_shell() -> i32 {
     let _ = stdout.flush();
 
     let mut last_exit_code = 0;
-    let mut reader = stdin.lock();
-    let mut line = String::new();
+    let rx_mutex = global_stdin_receiver();
 
     loop {
         let _ = stdout.write_all(b"\ntcpscan> ");
         let _ = stdout.flush();
 
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break, // EOF
-            Ok(_) => {}
-            Err(_) => break,
-        }
+        let line = match rx_mutex.lock().ok().and_then(|rx| rx.recv().ok()) {
+            Some(s) => s,
+            None => break, // EOF
+        };
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
