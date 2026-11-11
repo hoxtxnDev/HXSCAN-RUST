@@ -14,8 +14,8 @@
 
 use crate::mediator::{
     AddressScope, AuditedPortResult, ComponentId, EnrichedPortResult, HoneypotAssessment,
-    HoneypotVerdict, MediatorDirective, MediatorState, PortState, RiskLevel, ScanController,
-    ScanEvent, ScanMediator, SecurityPostureSummary,
+    HoneypotVerdict, MediatorDirective, MediatorState, PortState, ReconIntelligence, RiskLevel,
+    ScanController, ScanEvent, ScanMediator, SecurityPostureSummary,
 };
 
 /// **Colleague 5 (`AuditColleague`)**: Cybersecurity Risk & Attack Surface Audit Colleague.
@@ -31,9 +31,16 @@ impl AuditColleague {
             .as_ref()
             .map(|t| t.scope)
             .unwrap_or(AddressScope::Private);
+        let target_raw = mediator
+            .target
+            .as_ref()
+            .map(|t| t.raw_input.clone())
+            .unwrap_or_default();
         let enriched = std::mem::take(&mut mediator.enriched_results);
-        let (audited_results, summary) =
+        let (audited_results, mut summary) =
             execute_audit_stage_with_honeypots(enriched, scope, &mediator.honeypot_assessments);
+        summary.recon =
+            synthesize_recon_intelligence(&target_raw, &audited_results, summary.filtered_count);
 
         // Notify the Mediator immediately for each critical security finding
         for item in &audited_results {
@@ -592,6 +599,7 @@ pub fn execute_audit_stage_with_honeypots(
     };
 
     let os_hint = infer_os_hint(&audited);
+    let recon = synthesize_recon_intelligence("", &audited, filtered_count);
 
     let summary = SecurityPostureSummary {
         total_scanned,
@@ -608,9 +616,229 @@ pub fn execute_audit_stage_with_honeypots(
         possible_honeypot_count,
         confirmed_honeypot_count,
         os_hint,
+        recon,
     };
 
     (audited, summary)
+}
+
+/// Synthesize multi-port Hybrid Reconnaissance Intelligence across all audited ports:
+/// 1. Architectural Host Role (`host_role`)
+/// 2. Network Proximity & Reverse-Proxy / DNAT RTT Split Detection (`network_topology`, `rtt_split_anomaly`)
+/// 3. Shadow-Asset / Subdomain Pivot Extraction from X.509 SANs & Banners (`shadow_assets`)
+/// 4. Cross-Port Toxic Exposure Combinations (`toxic_combinations`)
+pub fn synthesize_recon_intelligence(
+    target_input: &str,
+    audited: &[AuditedPortResult],
+    filtered_count: usize,
+) -> ReconIntelligence {
+    let host_role = infer_host_role(audited, filtered_count);
+    let (network_topology, rtt_split_anomaly) = analyze_rtt_topology(audited);
+    let shadow_assets = extract_shadow_assets(target_input, audited);
+    let toxic_combinations = detect_toxic_combinations(audited);
+
+    ReconIntelligence {
+        host_role,
+        network_topology,
+        rtt_split_anomaly,
+        shadow_assets,
+        toxic_combinations,
+    }
+}
+
+/// Infer the target host's architectural role from its clean (non-honeypot) open port profile.
+pub fn infer_host_role(audited: &[AuditedPortResult], filtered_count: usize) -> String {
+    let open_any: Vec<&AuditedPortResult> = audited
+        .iter()
+        .filter(|r| r.state == PortState::Open)
+        .collect();
+    if open_any.is_empty() {
+        return "No Exposed TCP Services".to_string();
+    }
+
+    let clean_ports: Vec<u16> = open_any
+        .iter()
+        .filter(|r| !r.honeypot.is_suspicious())
+        .map(|r| r.port)
+        .collect();
+
+    if clean_ports.is_empty() {
+        return "Dedicated Deception Host / Honeypot Node".to_string();
+    }
+
+    let has = |p: u16| clean_ports.contains(&p);
+    let has_any = |list: &[u16]| list.iter().any(|p| clean_ports.contains(p));
+
+    if has(88) && has_any(&[53, 389, 445, 636]) {
+        "Active Directory Domain Controller".to_string()
+    } else if has_any(&[2375, 2376, 2379, 6443, 10250]) {
+        "Container / Kubernetes Control Node".to_string()
+    } else if has_any(&[80, 443, 3000, 5000, 8000, 8080, 8443, 8888])
+        && has_any(&[1433, 1521, 3306, 5432, 6379, 9042, 9200, 11211, 27017])
+    {
+        "Web + Database Monolith (Co-Resident Stack)".to_string()
+    } else if has_any(&[25, 465, 587]) && has_any(&[110, 143, 993, 995]) {
+        "Mail Gateway / Groupware Server".to_string()
+    } else if has_any(&[135, 139, 445]) && has_any(&[3389, 5985, 5986]) {
+        "Windows Server / Admin Workstation".to_string()
+    } else if clean_ports.len() == 1 && has(22) && filtered_count > 0 {
+        "Hardened Bastion / SSH Jump Host".to_string()
+    } else if has_any(&[80, 443, 3000, 5000, 8000, 8080, 8443, 8888]) {
+        "Web / API Application Server".to_string()
+    } else if has_any(&[1433, 1521, 3306, 5432, 6379, 9042, 9200, 11211, 27017]) {
+        "Dedicated Database / Cache Node".to_string()
+    } else {
+        "General Network Service Host".to_string()
+    }
+}
+
+/// Detect multi-port toxic combinations where co-resident services on the same host
+/// create compound attack paths (e.g., SSRF-to-DB, Windows Lateral Movement Triad).
+pub fn detect_toxic_combinations(audited: &[AuditedPortResult]) -> Vec<String> {
+    let clean_ports: Vec<u16> = audited
+        .iter()
+        .filter(|r| r.state == PortState::Open && !r.honeypot.is_suspicious())
+        .map(|r| r.port)
+        .collect();
+    let has_any = |list: &[u16]| list.iter().any(|p| clean_ports.contains(p));
+    let mut combos = Vec::new();
+
+    if has_any(&[80, 443, 3000, 5000, 8000, 8080, 8443, 8888])
+        && has_any(&[1433, 1521, 3306, 5432, 6379, 9042, 9200, 11211, 27017])
+    {
+        combos.push(
+            "Web + Data Store Co-Residency: public HTTP/HTTPS co-hosted with reachable DB/cache (SSRF / credential leak pivot)"
+                .to_string(),
+        );
+    }
+
+    if has_any(&[135, 139, 445]) && has_any(&[3389, 5985, 5986]) {
+        combos.push(
+            "Windows Lateral Movement Triad: SMB/RPC exposed alongside RDP/WinRM interactive execution"
+                .to_string(),
+        );
+    }
+
+    if has_any(&[2375, 2376, 6443, 10250]) && has_any(&[22, 3389, 5985]) {
+        combos.push(
+            "Control-Plane + Host-Admin Dual Exposure: container/cluster API co-exposed with host remote administration"
+                .to_string(),
+        );
+    }
+
+    if has_any(&[21, 23, 80, 110, 143]) && has_any(&[22, 443, 993, 995, 8443]) {
+        combos.push(
+            "Cleartext + TLS Dual Stack: cleartext protocol co-exists with encrypted service (credential reuse / downgrade surface)"
+                .to_string(),
+        );
+    }
+
+    if clean_ports.contains(&88) && has_any(&[389, 445, 636]) {
+        combos.push(
+            "Active Directory Identity Core: Kerberos (88) + LDAP/SMB exposed (ticket & relay attack surface)"
+                .to_string(),
+        );
+    }
+
+    combos
+}
+
+/// Analyze TCP connect RTT micro-variance across clean open ports to infer network proximity
+/// and detect Reverse-Proxy / DNAT Backend Split anomalies (`>= 4x` RTT ratio & `>= 15ms` delta).
+pub fn analyze_rtt_topology(audited: &[AuditedPortResult]) -> (String, Option<String>) {
+    let rtt_samples: Vec<(u16, u64)> = audited
+        .iter()
+        .filter(|r| r.state == PortState::Open && !r.honeypot.is_suspicious())
+        .filter_map(|r| r.rtt_micros.map(|us| (r.port, us.max(1))))
+        .collect();
+
+    if rtt_samples.is_empty() {
+        return ("Unknown / No Open RTT Samples".to_string(), None);
+    }
+
+    let &(min_port, min_us) = rtt_samples.iter().min_by_key(|(_, us)| *us).unwrap();
+    let &(max_port, max_us) = rtt_samples.iter().max_by_key(|(_, us)| *us).unwrap();
+
+    let topology = if min_us < 1_500 {
+        "Loopback / Local VSwitch (<1.5ms)".to_string()
+    } else if min_us <= 15_000 {
+        "LAN / Local L2-L3 Segment (1.5-15ms)".to_string()
+    } else if min_us <= 80_000 {
+        "Regional WAN / Cloud Peer (15-80ms)".to_string()
+    } else {
+        "Long-Haul WAN / Multi-Hop (>80ms)".to_string()
+    };
+
+    let split_anomaly = if rtt_samples.len() >= 2
+        && max_us >= min_us.saturating_mul(4)
+        && max_us.saturating_sub(min_us) >= 15_000
+    {
+        let ratio = (max_us as f64) / (min_us as f64);
+        Some(format!(
+            "Port {} ({:.2}ms) vs Port {} ({:.2}ms): {:.1}x RTT delta suggests Reverse-Proxy edge termination or DNAT port-forwarding to a remote backend",
+            min_port,
+            (min_us as f64) / 1000.0,
+            max_port,
+            (max_us as f64) / 1000.0,
+            ratio
+        ))
+    } else {
+        None
+    };
+
+    (topology, split_anomaly)
+}
+
+/// Extract unique shadow hostnames / subdomains discovered in TLS X.509 `SAN`/`subject_cn`
+/// fields or SMTP/FTP ESMTP banners on clean open ports.
+pub fn extract_shadow_assets(target_input: &str, audited: &[AuditedPortResult]) -> Vec<String> {
+    let base_target = target_input
+        .split(':')
+        .next()
+        .unwrap_or(target_input)
+        .trim()
+        .to_ascii_lowercase();
+    let mut assets = Vec::new();
+
+    let mut push_candidate = |candidate: &str| {
+        let cleaned = candidate
+            .trim()
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '*')
+            .to_ascii_lowercase();
+        if cleaned.len() >= 4
+            && cleaned.contains('.')
+            && cleaned != base_target
+            && cleaned != "localhost"
+            && cleaned != "localhost.localdomain"
+            && cleaned.parse::<std::net::IpAddr>().is_err()
+            && !assets.contains(&cleaned)
+        {
+            assets.push(cleaned);
+        }
+    };
+
+    for item in audited
+        .iter()
+        .filter(|r| r.state == PortState::Open && !r.honeypot.is_suspicious())
+    {
+        if let Some(ref tls) = item.tls {
+            if let Some(ref cn) = tls.subject_cn {
+                push_candidate(cn);
+            }
+            for san in &tls.sans {
+                push_candidate(san);
+            }
+        }
+        if let Some(ref banner) = item.banner {
+            // Check 220 <fqdn> ESMTP/FTP greeting banners
+            let tokens: Vec<&str> = banner.split_whitespace().collect();
+            if tokens.len() >= 2 && tokens[0] == "220" && tokens[1].contains('.') {
+                push_candidate(tokens[1]);
+            }
+        }
+    }
+
+    assets
 }
 
 #[cfg(test)]
@@ -755,5 +983,175 @@ mod tests {
         assert!(audited[1].cves.contains(&"CVE-2021-41773".to_string()));
         assert_eq!(audited[1].risk, RiskLevel::Critical);
         assert_eq!(summary.os_hint.as_deref(), Some("Linux (Debian)"));
+    }
+
+    #[test]
+    fn test_infer_host_role_classifications() {
+        let open_port = |port: u16, service: &str| EnrichedPortResult {
+            port,
+            state: PortState::Open,
+            service: service.to_string(),
+            service_version: None,
+            banner: None,
+            rtt_micros: Some(1_000),
+            tls: None,
+        };
+
+        // 1. Active Directory Domain Controller (88 + 389 + 445)
+        let (_, ad_summary) = execute_audit_stage(
+            vec![
+                open_port(88, "Kerberos"),
+                open_port(389, "LDAP"),
+                open_port(445, "SMB"),
+            ],
+            AddressScope::Private,
+        );
+        assert_eq!(
+            ad_summary.recon.host_role,
+            "Active Directory Domain Controller"
+        );
+
+        // 2. Web + Database Monolith (443 + 5432)
+        let (_, web_db_summary) = execute_audit_stage(
+            vec![open_port(443, "HTTPS"), open_port(5432, "PostgreSQL")],
+            AddressScope::Private,
+        );
+        assert_eq!(
+            web_db_summary.recon.host_role,
+            "Web + Database Monolith (Co-Resident Stack)"
+        );
+
+        // 3. Hardened Bastion (only 22 open + filtered ports)
+        let (_, bastion_summary) = execute_audit_stage(
+            vec![
+                open_port(22, "SSH"),
+                EnrichedPortResult {
+                    port: 443,
+                    state: PortState::Filtered,
+                    service: "HTTPS".to_string(),
+                    service_version: None,
+                    banner: None,
+                    rtt_micros: None,
+                    tls: None,
+                },
+            ],
+            AddressScope::Public,
+        );
+        assert_eq!(
+            bastion_summary.recon.host_role,
+            "Hardened Bastion / SSH Jump Host"
+        );
+    }
+
+    #[test]
+    fn test_detect_toxic_combinations_web_db_and_windows_triad() {
+        let open_port = |port: u16, service: &str| EnrichedPortResult {
+            port,
+            state: PortState::Open,
+            service: service.to_string(),
+            service_version: None,
+            banner: None,
+            rtt_micros: Some(2_000),
+            tls: None,
+        };
+
+        let (audited, summary) = execute_audit_stage(
+            vec![
+                open_port(80, "HTTP"),
+                open_port(443, "HTTPS"),
+                open_port(6379, "Redis"),
+                open_port(445, "SMB"),
+                open_port(3389, "RDP"),
+            ],
+            AddressScope::Private,
+        );
+        let combos = detect_toxic_combinations(&audited);
+        assert!(combos
+            .iter()
+            .any(|c| c.contains("Web + Data Store Co-Residency")));
+        assert!(combos
+            .iter()
+            .any(|c| c.contains("Windows Lateral Movement Triad")));
+        assert!(combos
+            .iter()
+            .any(|c| c.contains("Cleartext + TLS Dual Stack")));
+        assert_eq!(summary.recon.toxic_combinations.len(), 3);
+    }
+
+    #[test]
+    fn test_analyze_rtt_topology_and_dnat_split_detection() {
+        let edge_https = EnrichedPortResult {
+            port: 443,
+            state: PortState::Open,
+            service: "HTTPS".to_string(),
+            service_version: None,
+            banner: None,
+            rtt_micros: Some(2_000), // 2.00ms (local reverse proxy edge)
+            tls: None,
+        };
+        let tunneled_ssh = EnrichedPortResult {
+            port: 2222,
+            state: PortState::Open,
+            service: "SSH".to_string(),
+            service_version: None,
+            banner: None,
+            rtt_micros: Some(42_000), // 42.00ms (DNAT/tunneled to remote origin)
+            tls: None,
+        };
+
+        let (audited, _) =
+            execute_audit_stage(vec![edge_https, tunneled_ssh], AddressScope::Public);
+        let (topology, anomaly) = analyze_rtt_topology(&audited);
+        assert_eq!(topology, "LAN / Local L2-L3 Segment (1.5-15ms)");
+        let anomaly_text = anomaly.expect("Expected DNAT/Reverse-Proxy RTT split anomaly");
+        assert!(anomaly_text.contains("Port 443 (2.00ms) vs Port 2222 (42.00ms)"));
+        assert!(anomaly_text.contains("21.0x RTT delta"));
+    }
+
+    #[test]
+    fn test_extract_shadow_assets_from_tls_sans_and_banners() {
+        let https = EnrichedPortResult {
+            port: 443,
+            state: PortState::Open,
+            service: "HTTPS".to_string(),
+            service_version: None,
+            banner: None,
+            rtt_micros: Some(1_200),
+            tls: Some(crate::mediator::TlsCertificateInfo {
+                subject_cn: Some("portal.corp.example.com".to_string()),
+                issuer_cn: Some("Corp CA".to_string()),
+                sans: vec![
+                    "portal.corp.example.com".to_string(),
+                    "staging-api.corp.example.com".to_string(),
+                    "vault.internal.example.com".to_string(),
+                ],
+                not_after: None,
+                days_until_expiry: Some(90),
+                self_signed: false,
+                hostname_mismatch: false,
+                chain_length: 2,
+            }),
+        };
+        let smtp = EnrichedPortResult {
+            port: 25,
+            state: PortState::Open,
+            service: "SMTP".to_string(),
+            service_version: None,
+            banner: Some("220 mail-gw01.internal.example.com ESMTP Postfix".to_string()),
+            rtt_micros: Some(1_400),
+            tls: None,
+        };
+
+        let (audited, _) = execute_audit_stage(vec![https, smtp], AddressScope::Private);
+        let assets = extract_shadow_assets("portal.corp.example.com", &audited);
+        // Should exclude the requested target itself ("portal.corp.example.com") and return only pivot shadow assets:
+        assert_eq!(
+            assets,
+            vec![
+                "staging-api.corp.example.com".to_string(),
+                "vault.internal.example.com".to_string(),
+                "mail-gw01.internal.example.com".to_string(),
+            ]
+        );
     }
 }

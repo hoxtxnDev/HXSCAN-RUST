@@ -471,6 +471,7 @@ mod tests {
             possible_honeypot_count: 0,
             confirmed_honeypot_count: 0,
             os_hint: None,
+            recon: Default::default(),
         };
         assert_eq!(filtered_ratio_pct(&summary), 50);
     }

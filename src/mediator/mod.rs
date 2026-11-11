@@ -9,8 +9,8 @@ pub mod controller;
 pub use contract::{
     AddressScope, AuditedPortResult, ComponentId, EnrichedPortResult, HoneypotAssessment,
     HoneypotBehavior, HoneypotVerdict, MediatedEventRecord, MediatorDirective, MediatorState,
-    OutputFormat, PortState, RawProbeResult, ReportOptions, RiskLevel, ScanEvent, ScanMediator,
-    ScannerConfig, SecurityPostureSummary, StealthConfig, StealthMode, StealthTelemetry,
-    TargetInfo, TlsCertificateInfo, TrafficPersona,
+    OutputFormat, PortState, RawProbeResult, ReconIntelligence, ReportOptions, RiskLevel,
+    ScanEvent, ScanMediator, ScannerConfig, SecurityPostureSummary, StealthConfig, StealthMode,
+    StealthTelemetry, TargetInfo, TlsCertificateInfo, TrafficPersona,
 };
 pub use controller::{PipelineConfig, PipelineOutput, ScanController};

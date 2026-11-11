@@ -389,6 +389,32 @@ fn render_human_report(
         }
     }
 
+    if !summary.recon.host_role.is_empty() && summary.open_count > 0 {
+        let _ = writeln!(
+            out,
+            "\n{}",
+            colorize("[Hybrid Recon & Attack Path Synthesis]", "1;34", c)
+        );
+        let _ = writeln!(
+            out,
+            "  • Host Role: {} | Topology: {}",
+            summary.recon.host_role, summary.recon.network_topology
+        );
+        if let Some(ref split) = summary.recon.rtt_split_anomaly {
+            let _ = writeln!(out, "  • [!] Proxy / DNAT Split: {split}");
+        }
+        if !summary.recon.shadow_assets.is_empty() {
+            let _ = writeln!(
+                out,
+                "  • Shadow Assets / Pivot FQDNs: {}",
+                summary.recon.shadow_assets.join(", ")
+            );
+        }
+        for combo in &summary.recon.toxic_combinations {
+            let _ = writeln!(out, "  • [!] Attack Path Chain: {combo}");
+        }
+    }
+
     if options.show_nmap_cmd {
         let _ = writeln!(
             out,
@@ -500,9 +526,23 @@ fn render_json_report(
         stealth.legitimacy_score,
         stealth.legitimacy_grade
     );
+    let shadow_json = summary
+        .recon
+        .shadow_assets
+        .iter()
+        .map(|s| format!("\"{}\"", escape_json_str(s)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let combos_json = summary
+        .recon
+        .toxic_combinations
+        .iter()
+        .map(|s| format!("\"{}\"", escape_json_str(s)))
+        .collect::<Vec<_>>()
+        .join(",");
     let _ = writeln!(
         out,
-        "  \"summary\": {{ \"total_scanned\": {}, \"open\": {}, \"closed\": {}, \"filtered\": {}, \"errors\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"exposure_score\": {}, \"posture_grade\": \"{}\", \"firewall_detected\": {}, \"possible_honeypots\": {}, \"confirmed_honeypots\": {}, \"os_hint\": {} }},",
+        "  \"summary\": {{ \"total_scanned\": {}, \"open\": {}, \"closed\": {}, \"filtered\": {}, \"errors\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"exposure_score\": {}, \"posture_grade\": \"{}\", \"firewall_detected\": {}, \"possible_honeypots\": {}, \"confirmed_honeypots\": {}, \"os_hint\": {}, \"host_role\": \"{}\", \"network_topology\": \"{}\", \"rtt_split_anomaly\": {}, \"shadow_assets\": [{}], \"toxic_combinations\": [{}] }},",
         summary.total_scanned,
         summary.open_count,
         summary.closed_count,
@@ -516,7 +556,12 @@ fn render_json_report(
         summary.firewall_detected,
         summary.possible_honeypot_count,
         summary.confirmed_honeypot_count,
-        json_optional_string(summary.os_hint.as_deref())
+        json_optional_string(summary.os_hint.as_deref()),
+        escape_json_str(&summary.recon.host_role),
+        escape_json_str(&summary.recon.network_topology),
+        json_optional_string(summary.recon.rtt_split_anomaly.as_deref()),
+        shadow_json,
+        combos_json
     );
     let _ = writeln!(out, "  \"ports\": [");
 
@@ -777,6 +822,7 @@ mod tests {
             possible_honeypot_count: 0,
             confirmed_honeypot_count: 0,
             os_hint: None,
+            recon: Default::default(),
         }
     }
 
@@ -1030,5 +1076,76 @@ mod tests {
 
         let silent = render_silent_report(&target, &audited);
         assert_eq!(silent, "127.0.0.1:22\n");
+    }
+
+    #[test]
+    fn test_hybrid_recon_synthesis_section_in_human_and_json_reports() {
+        let target = sample_target();
+        let audited = vec![AuditedPortResult {
+            port: 443,
+            state: PortState::Open,
+            service: "HTTPS".to_string(),
+            service_version: Some("nginx/1.26.2".to_string()),
+            cpe: None,
+            cves: Vec::new(),
+            banner: None,
+            rtt_micros: Some(1_800),
+            risk: RiskLevel::Info,
+            category: "TLS Encrypted Service",
+            advisory: String::new(),
+            tls: None,
+            honeypot: HoneypotAssessment::clean(443),
+        }];
+        let mut summary = sample_summary(1, 0);
+        summary.recon = crate::mediator::ReconIntelligence {
+            host_role: "Web + Database Monolith (Co-Resident Stack)".to_string(),
+            network_topology: "LAN / Local L2-L3 Segment (1.5-15ms)".to_string(),
+            rtt_split_anomaly: Some(
+                "Port 443 (1.80ms) vs Port 3306 (38.00ms): 21.1x RTT delta".to_string(),
+            ),
+            shadow_assets: vec![
+                "staging.internal.example.com".to_string(),
+                "vault.internal.example.com".to_string(),
+            ],
+            toxic_combinations: vec!["Web + Data Store Co-Residency".to_string()],
+        };
+
+        let human = render_report(
+            &target,
+            &audited,
+            &summary,
+            Duration::from_millis(10),
+            &ReportOptions {
+                format: OutputFormat::Human,
+                show_closed: false,
+                use_color: false,
+                show_nmap_cmd: false,
+            },
+        );
+        assert!(human.contains("[Hybrid Recon & Attack Path Synthesis]"));
+        assert!(human.contains("Web + Database Monolith (Co-Resident Stack)"));
+        assert!(human.contains("Proxy / DNAT Split: Port 443 (1.80ms) vs Port 3306 (38.00ms)"));
+        assert!(human.contains(
+            "Shadow Assets / Pivot FQDNs: staging.internal.example.com, vault.internal.example.com"
+        ));
+        assert!(human.contains("Attack Path Chain: Web + Data Store Co-Residency"));
+
+        let json = render_report(
+            &target,
+            &audited,
+            &summary,
+            Duration::from_millis(10),
+            &ReportOptions {
+                format: OutputFormat::Json,
+                show_closed: false,
+                use_color: false,
+                show_nmap_cmd: false,
+            },
+        );
+        assert!(json.contains("\"host_role\": \"Web + Database Monolith (Co-Resident Stack)\""));
+        assert!(json.contains(
+            "\"shadow_assets\": [\"staging.internal.example.com\",\"vault.internal.example.com\"]"
+        ));
+        assert!(json.contains("\"toxic_combinations\": [\"Web + Data Store Co-Residency\"]"));
     }
 }

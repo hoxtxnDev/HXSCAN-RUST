@@ -59,9 +59,10 @@ pub use cli::{
 pub use mediator::{
     AddressScope, AuditedPortResult, ComponentId, EnrichedPortResult, HoneypotAssessment,
     HoneypotBehavior, HoneypotVerdict, MediatedEventRecord, MediatorDirective, MediatorState,
-    OutputFormat, PipelineConfig, PipelineOutput, PortState, RawProbeResult, ReportOptions,
-    RiskLevel, ScanController, ScanEvent, ScanMediator, ScannerConfig, SecurityPostureSummary,
-    StealthConfig, StealthMode, StealthTelemetry, TargetInfo, TlsCertificateInfo, TrafficPersona,
+    OutputFormat, PipelineConfig, PipelineOutput, PortState, RawProbeResult, ReconIntelligence,
+    ReportOptions, RiskLevel, ScanController, ScanEvent, ScanMediator, ScannerConfig,
+    SecurityPostureSummary, StealthConfig, StealthMode, StealthTelemetry, TargetInfo,
+    TlsCertificateInfo, TrafficPersona,
 };
 pub use stages::stage1_discovery::{
     expand_target_inputs, parse_port_spec, parse_port_spec_with_exclusions, resolve_target,
@@ -78,8 +79,10 @@ pub use stages::stage3_fingerprint::{
 };
 pub use stages::stage4_honeypot::{analyze_honeypots, evaluate_honeypot_port, HoneypotColleague};
 pub use stages::stage5_audit::{
-    build_cpe23, correlate_cves, evaluate_port_security, evaluate_port_security_with_honeypot,
-    execute_audit_stage, execute_audit_stage_with_honeypots, infer_os_hint, AuditColleague,
+    analyze_rtt_topology, build_cpe23, correlate_cves, detect_toxic_combinations,
+    evaluate_port_security, evaluate_port_security_with_honeypot, execute_audit_stage,
+    execute_audit_stage_with_honeypots, extract_shadow_assets, infer_host_role, infer_os_hint,
+    synthesize_recon_intelligence, AuditColleague,
 };
 pub use stages::stage6_report::{
     build_clean_nmap_command, render_report, render_report_with_stealth, sanitize_csv_cell,

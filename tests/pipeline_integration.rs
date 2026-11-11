@@ -685,3 +685,62 @@ fn test_v3_aggressive_audit_cpe_cve_os_hint_and_honeypot_filtered_nmap_cmd() {
     assert!(report.contains("nmap -sV -sC -p 22,80 10.0.0.5"));
     assert!(!report.contains("nmap -sV -sC -p 22,80,2222"));
 }
+
+#[test]
+fn test_v3_hybrid_recon_dnat_split_shadow_assets_and_attack_paths() {
+    let action = parse_cli_args(["10.0.0.15", "-p25,443,3306", "--no-color"]).unwrap();
+    let config = match action {
+        CliAction::Run(cfg) => cfg,
+        _ => panic!("Expected CliAction::Run"),
+    };
+
+    let output = ScanController::new(config)
+        .execute_with_prober(|port| match port {
+            25 => RawProbeResult {
+                port,
+                state: PortState::Open,
+                rtt_micros: Some(2_200), // 2.2ms
+                attempts: 1,
+                inline_banner: Some("220 smtp-relay.internal.corp ESMTP Postfix".to_string()),
+            },
+            443 => RawProbeResult {
+                port,
+                state: PortState::Open,
+                rtt_micros: Some(2_000), // 2.0ms (edge proxy)
+                attempts: 1,
+                inline_banner: Some("HTTP/1.1 200 OK (nginx/1.26.2)".to_string()),
+            },
+            3306 => RawProbeResult {
+                port,
+                state: PortState::Open,
+                rtt_micros: Some(46_000), // 46.0ms (remote DNAT database)
+                attempts: 1,
+                inline_banner: Some("8.0.36-MySQL".to_string()),
+            },
+            _ => unreachable!(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        output.summary.recon.host_role,
+        "Web + Database Monolith (Co-Resident Stack)"
+    );
+    assert!(output.summary.recon.rtt_split_anomaly.is_some());
+    assert_eq!(
+        output.summary.recon.shadow_assets,
+        vec!["smtp-relay.internal.corp".to_string()]
+    );
+    assert!(output
+        .summary
+        .recon
+        .toxic_combinations
+        .iter()
+        .any(|c| c.contains("Web + Data Store Co-Residency")));
+
+    let report = &output.formatted_report;
+    assert!(report.contains("[Hybrid Recon & Attack Path Synthesis]"));
+    assert!(report.contains("Host Role: Web + Database Monolith (Co-Resident Stack)"));
+    assert!(report.contains("Proxy / DNAT Split: Port 443 (2.00ms) vs Port 3306 (46.00ms)"));
+    assert!(report.contains("Shadow Assets / Pivot FQDNs: smtp-relay.internal.corp"));
+    assert!(report.contains("Attack Path Chain: Web + Data Store Co-Residency"));
+}

@@ -646,6 +646,29 @@ pub struct SecurityPostureSummary {
     pub confirmed_honeypot_count: usize,
     /// Passive operating-system hint inferred from service banners and open port profile.
     pub os_hint: Option<String>,
+    /// Hybrid multi-port reconnaissance intelligence synthesized by Stage 5.
+    pub recon: ReconIntelligence,
+}
+
+/// Hybrid Red/Purple-Team Reconnaissance Intelligence synthesized across all open ports
+/// on the target host (`Stage 5` -> `Stage 6` via Mediator).
+///
+/// Combines multi-port architectural role classification, cross-port toxic exposure
+/// combinations, RTT micro-variance DNAT/reverse-proxy split detection, and shadow-asset
+/// hostname extraction from X.509 SANs and service banners.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReconIntelligence {
+    /// Inferred architectural role of the host from its open port combination.
+    pub host_role: String,
+    /// Network proximity tier inferred from minimum clean TCP handshake RTT.
+    pub network_topology: String,
+    /// Present when clean open ports exhibit >= 4x RTT divergence (>= 15ms delta),
+    /// indicating local reverse-proxy termination vs remote DNAT/tunnel port-forwarding.
+    pub rtt_split_anomaly: Option<String>,
+    /// Unique alternate DNS hostnames / subdomains discovered in TLS SANs, CNs, or banners.
+    pub shadow_assets: Vec<String>,
+    /// Multi-port attack-path correlations where co-resident services amplify risk.
+    pub toxic_combinations: Vec<String>,
 }
 
 /// Stealth / anti-AI legitimacy telemetry rendered in the final report.
